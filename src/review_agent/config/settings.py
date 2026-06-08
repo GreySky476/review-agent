@@ -61,6 +61,10 @@ class AppSettings(BaseSettings):
         default=".md,.rst,.txt",
         description="跳过评审的文件扩展名（逗号分隔）",
     )
+    review_max_concurrency: int = Field(
+        default=3,
+        description="文件级并发评审的最大并发数",
+    )
     verbose_report_threshold: int = Field(
         default=5,
         description="触发详细报告的 critical/warning Finding 数量阈值",

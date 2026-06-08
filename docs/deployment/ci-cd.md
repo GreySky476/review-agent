@@ -1,6 +1,6 @@
 # CI/CD 与部署运维
 
-> 文档版本：v1.1 | 更新日期：2026-06-08 | 关联文档：[架构总览](../architecture/overview.md)、[安全规范](../security/guidelines.md)
+> 文档版本：v1.2 | 更新日期：2026-06-09 | 关联文档：[架构总览](../architecture/overview.md)、[安全规范](../security/guidelines.md)
 
 ---
 
@@ -87,9 +87,15 @@ docker compose down -v
 # .env — 参考 .env.example
 REVIEW_AGENT_DATABASE_URL=postgresql+asyncpg://review:review@localhost:5432/review_agent
 REVIEW_AGENT_REDIS_URL=redis://localhost:6379/0
-REVIEW_AGENT_ARQ_REDIS_URL=redis://localhost:6379/0
-REVIEW_AGENT_DEEPSEEK_API_KEY=sk-xxx
+REVIEW_AGENT_ARQ_REDIS_URL=redis://localhost:6379/1
+REVIEW_AGENT_AI_API_KEY=sk-xxx             # DeepSeek 密钥
+REVIEW_AGENT_AI_MODEL_NAME=deepseek-v4-flash
+REVIEW_AGENT_GITHUB_TOKEN=ghp_xxx           # GitHub API 令牌
 REVIEW_AGENT_LOG_LEVEL=INFO
+
+# 可选调优
+REVIEW_AGENT_REVIEW_MAX_CONCURRENCY=3       # 文件级并发上限
+REVIEW_AGENT_REVIEW_SKIP_EXTENSIONS=.md,.rst,.txt
 ```
 
 ---

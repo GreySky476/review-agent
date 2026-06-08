@@ -1,6 +1,6 @@
 # 系统架构总览
 
-> 文档版本：v1.0 | 更新日期：2026-06-08 | 关联文档：[模块边界](module-boundaries.md)、[API 规范](../api/conventions.md)
+> 文档版本：v1.1 | 更新日期：2026-06-09 | 关联文档：[模块边界](module-boundaries.md)、[API 规范](../api/conventions.md)
 
 ---
 
@@ -66,15 +66,13 @@
 |------|------|------|
 | 语言 | Python 3.11+ | 运行时 |
 | Web 框架 | FastAPI | 异步 Webhook 接收与管理后台 API |
-| 任务队列 | Celery + Redis / ARQ | 异步化 AI 评审任务 |
-| 消息队列 | Redis Stream / RabbitMQ | 持久化、消费者组、死信队列 |
-| 数据库 | PostgreSQL 15+ | 主存储，支持 pgvector 扩展 |
-| 缓存 | Redis 7+ | 缓存、分布式锁、会话 |
+| 任务队列 | ARQ + Redis | 异步化 AI 评审任务 |
+| 数据库 | PostgreSQL 15+ | 主存储 |
+| 缓存 | Redis 7+ | 缓存、分布式锁、ARQ 队列 |
 | ORM | SQLAlchemy 2.0 (async) + Alembic | 数据库操作与迁移 |
-| 对象存储 | MinIO / S3 | 原始事件、评审报告 |
-| AI 编排 | LangChain + LangGraph | 有状态评审流水线 |
-| 代码解析 | tree-sitter | AST 分析与指标提取 |
-| 向量数据库 | pgvector / Milvus Lite | 规范知识库相似度检索 |
+| Git 平台 | PyGithub | GitHub API 封装 |
+| AI 调用 | httpx → DeepSeek / OpenAI API | 代码评审大模型调用 |
+| 代码解析 | tree-sitter (规划中) | AST 分析与指标提取 |
 | 配置管理 | Pydantic Settings | 环境变量加载与验证 |
 | 日志与追踪 | OpenTelemetry | 全链路追踪，结构化 JSON 日志 |
 
@@ -144,7 +142,56 @@ Worker 消费 → 拉取 Diff → 分块
        └── 否则 → 行级评论
 ```
 
-### 4.2 代码分块策略
+### 4.2 Push 评审流程（M2）
+
+新增的 Push 事件评审支持开发者推送代码后自动触发 AI 评审：
+
+```text
+GitHub Push Webhook (x-github-event: push)
+       │
+       ▼
+解析 payload → 提取 head_commit、repo_name、changed_files
+       │
+       ▼
+保存 commit 记录 → CommitRepo.create()
+       │
+       ▼
+入队 → enqueue_commit_review()
+       │
+       ▼
+ARQ Worker: run_commit_review()
+       │
+       ▼
+CommitReviewService (文件级并发，默认 3 个同时处理)
+       │
+       ├── 文件 1 → get_file_content() → chunk_file()
+       ├── 文件 2 → get_file_content() → chunk_file()
+       └── 文件 3 → get_file_content() → chunk_file()
+       │
+       ▼
+逐 chunk 审查:
+       ├── ≤1500 tokens → 规则检查 + AI 评审 (DeepSeek)
+       ├── 1500~2000   → 规则检查 + 结构评审，跳过 AI
+       └── >2000       → 结构评审 (圈复杂度/行数/参数)
+       │
+       ▼
+Publisher.aggregate() → 跨文件去重 → 打分
+       │
+       ▼
+publish_commit_summary() → GitHub Commit 评论
+```
+
+**与 PR 评审的关键区别：**
+
+| 维度 | PR 评审 | Push 评审 |
+|------|---------|-----------|
+| 触发事件 | `pull_request` (opened/synchronize) | `push` |
+| 数据来源 | PR Diff API | Commit API |
+| 评论位置 | PR Review Comment | Commit Comment |
+| 并发策略 | 待实现 | 文件级并发 (Semaphore=3) |
+| AI 调用 | 待实现 | 按 chunk token 数分流 |
+
+### 4.3 代码分块策略
 
 | 分类 | Token 范围 | 处理方式 |
 |------|-----------|---------|

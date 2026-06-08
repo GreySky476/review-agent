@@ -108,7 +108,7 @@
 
 | 日期 | 变更内容 | 变更人 |
 |------|----------|--------|
-| YYYY-MM-DD | 初始化 | - |
+| 2026-06-09 | GitHub Push Webhook 自动评审：CommitReviewService + 文件级并发 + 文档更新 | GreySky476 |
 
 ## 文件结构
 

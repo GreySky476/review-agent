@@ -94,6 +94,45 @@ class TestWebhookEndpoints:
         data = resp.json()
         assert data["status"] == "ignored"
 
+    async def test_github_push_event_no_project(self, client: AsyncClient) -> None:
+        """Push event for unknown repo should be ignored."""
+        payload = {
+            "ref": "refs/heads/main",
+            "repository": {"full_name": "unknown/repo"},
+            "head_commit": {
+                "id": "abc123",
+                "message": "test commit",
+                "author": {"name": "tester"},
+                "added": ["new.py"],
+                "modified": [],
+                "removed": [],
+            },
+            "commits": [],
+        }
+        resp = await client.post(
+            "/webhook/github",
+            json=payload,
+            headers={"X-GitHub-Event": "push"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ignored"
+
+    async def test_github_push_event_no_head_commit(self, client: AsyncClient) -> None:
+        """Push event without head_commit should be ignored."""
+        payload = {
+            "ref": "refs/heads/main",
+            "repository": {"full_name": "test/repo"},
+        }
+        resp = await client.post(
+            "/webhook/github",
+            json=payload,
+            headers={"X-GitHub-Event": "push"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ignored"
+
 
 @pytest.mark.asyncio
 class TestProjectEndpoints:

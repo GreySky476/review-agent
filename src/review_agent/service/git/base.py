@@ -89,6 +89,32 @@ class GitProvider(ABC):
         ...
 
     @abstractmethod
+    async def get_commit_diff(self, repo_name: str, sha: str) -> list[PRFile]:
+        """获取单次提交的变更文件列表（含 patch）。
+
+        Args:
+            repo_name: 仓库全名（如 "owner/repo"）。
+            sha: 提交 SHA。
+
+        Returns:
+            变更文件列表。
+        """
+        ...
+
+    @abstractmethod
+    async def publish_commit_summary(
+        self, repo_name: str, sha: str, summary: str
+    ) -> None:
+        """在提交上发布摘要评论。
+
+        Args:
+            repo_name: 仓库全名。
+            sha: 提交 SHA。
+            summary: Markdown 格式的摘要内容。
+        """
+        ...
+
+    @abstractmethod
     async def publish_line_comments(
         self, repo_name: str, pr_number: int, comments: list[ReviewComment]
     ) -> None:

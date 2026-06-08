@@ -10,6 +10,8 @@ from arq import create_pool
 from arq.connections import RedisSettings
 
 from review_agent.config.settings import get_settings
+from review_agent.service.commit_review import CommitReviewService
+from review_agent.service.git.github_provider import GitHubProvider
 from review_agent.types.enums import ReviewStatus
 
 logger = logging.getLogger(__name__)
@@ -18,10 +20,10 @@ logger = logging.getLogger(__name__)
 async def run_review(
     _ctx: dict[str, Any], project_id: str, pr_number: int, _head_sha: str
 ) -> dict[str, Any]:
-    """执行评审任务（ARQ worker 调用）。"""
+    """执行 PR 评审任务（ARQ worker 调用）。"""
     try:
         logger.info("Starting review for PR #%d (project=%s)", pr_number, project_id)
-        # TODO: 实际评审逻辑
+        # TODO: 实际 PR 评审逻辑
         return {
             "project_id": project_id,
             "pr_number": pr_number,
@@ -40,8 +42,80 @@ async def run_review(
         }
 
 
+async def run_commit_review(
+    _ctx: dict[str, Any],
+    project_id: str,
+    repo_name: str,
+    sha: str,
+    changed_files: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """执行 commit 评审任务（ARQ worker 调用）。"""
+    try:
+        logger.info("Starting commit review for %s@%s (project=%s)", repo_name, sha, project_id)
+        settings = get_settings()
+
+        git_provider = GitHubProvider(token=settings.github_token)
+        ai_provider: Any = None
+        if settings.ai_api_key:
+            from review_agent.service.ai.deepseek import DeepSeekProvider
+
+            ai_provider = DeepSeekProvider(
+                api_key=settings.ai_api_key,
+                base_url=settings.ai_base_url,
+            )
+
+        service = CommitReviewService(git_provider=git_provider, ai_provider=ai_provider)
+
+        # 转换 changed_files 为 PRFile 对象
+        from review_agent.service.git.base import PRFile
+
+        files = [
+            PRFile(
+                filename=f["filename"],
+                status=f.get("status", "modified"),
+                additions=f.get("additions", 0),
+                deletions=f.get("deletions", 0),
+                patch=f.get("patch"),
+            )
+            for f in changed_files
+        ]
+
+        result = await service.review_commit(repo_name, sha, files)
+
+        # 发布摘要评论到 GitHub（失败不影响评审结果）
+        if result.summary_markdown:
+            try:
+                await git_provider.publish_commit_summary(repo_name, sha, result.summary_markdown)
+            except Exception:
+                logger.warning(
+                    "Failed to publish commit summary for %s@%s: %s",
+                    repo_name, sha, traceback.format_exc(),
+                )
+
+        logger.info(
+            "Commit review completed for %s@%s: %d findings, score=%d",
+            repo_name, sha, len(result.findings), result.score,
+        )
+        return {
+            "project_id": project_id,
+            "sha": sha,
+            "status": ReviewStatus.COMPLETED.value,
+            "findings_count": len(result.findings),
+            "score": result.score,
+        }
+    except Exception:
+        error_msg = traceback.format_exc()
+        logger.error("Commit review failed for %s@%s: %s", repo_name, sha, error_msg)
+        return {
+            "project_id": project_id,
+            "sha": sha,
+            "status": ReviewStatus.FAILED.value,
+            "error": f"review_failed: {error_msg[:200]}",
+        }
+
+
 async def enqueue_review(project_id: str, pr_number: int, head_sha: str) -> str | None:
-    """将评审任务加入队列。"""
+    """将 PR 评审任务加入队列。"""
     try:
         settings = get_settings()
         redis = await create_pool(RedisSettings.from_dsn(settings.arq_redis_url))
@@ -53,13 +127,37 @@ async def enqueue_review(project_id: str, pr_number: int, head_sha: str) -> str 
         return None
 
 
+async def enqueue_commit_review(
+    project_id: str,
+    repo_name: str,
+    sha: str,
+    changed_files: list[dict[str, Any]],
+) -> str | None:
+    """将 commit 评审任务加入队列。"""
+    try:
+        settings = get_settings()
+        redis = await create_pool(RedisSettings.from_dsn(settings.arq_redis_url))
+        job = await redis.enqueue_job(
+            "run_commit_review",
+            project_id,
+            repo_name,
+            sha,
+            changed_files,
+        )
+        await redis.close()
+        return job.job_id if job else None
+    except Exception as exc:
+        logger.error("Failed to enqueue commit review job: %s", exc)
+        return None
+
+
 class WorkerSettings:
     """ARQ Worker 配置。
 
     启动方式： uv run arq src.review_agent.service.queue.WorkerSettings
     """
 
-    functions = [run_review]
+    functions = [run_review, run_commit_review]
     redis_settings = RedisSettings.from_dsn(get_settings().arq_redis_url)
     keep_result_seconds = 7 * 86400
     keep_result_hours = 7 * 24

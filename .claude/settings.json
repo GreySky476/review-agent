@@ -1,11 +1,8 @@
 {
-  "model": {
-    "default": "deepseek-v4-flash",
-    "fast": "deepseek-v4-flash"
-  },
+  "model": "deepseek-v4-flash",
   "hooks": {
-    "Bash": {
-      "pre": "./.claude/hooks/before-command.sh"
+    "PreToolUse": {
+      "command": "bash ./.claude/hooks/before-command.sh"
     }
   },
   "skills": [

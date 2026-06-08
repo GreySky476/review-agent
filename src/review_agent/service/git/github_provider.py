@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+import github.Auth
 from github import Github
 from github.PullRequest import PullRequest
 
@@ -22,7 +23,9 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
 
     def __init__(self, token: str | None = None) -> None:
         settings = get_settings()
-        self._client = Github(token or settings.github_token)
+        token_str = token or settings.github_token
+        auth = github.Auth.Token(token_str) if token_str else None
+        self._client = Github(auth=auth, timeout=15)
 
     def _get_repo_and_pr(self, repo_name: str, pr_number: int) -> tuple[object, PullRequest]:
         """获取仓库和 PR 对象。"""
@@ -80,6 +83,39 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
         except Exception:
             logger.warning("Failed to fetch file %s@%s:%s", repo_name, ref, file_path)
             return None
+
+    async def get_commit_diff(self, repo_name: str, sha: str) -> list[PRFile]:
+        """获取单次提交的变更文件列表（含 patch）。"""
+        try:
+            repo = self._client.get_repo(repo_name)
+            commit = repo.get_commit(sha)
+            files = []
+            for f in commit.files:
+                files.append(
+                    PRFile(
+                        filename=f.filename,
+                        status=f.status,
+                        additions=f.additions,
+                        deletions=f.deletions,
+                        patch=getattr(f, "patch", None),
+                    )
+                )
+            return files
+        except Exception as exc:
+            msg = f"Failed to fetch commit diff {repo_name}@{sha}: {exc}"
+            raise GitProviderError(msg) from exc
+
+    async def publish_commit_summary(
+        self, repo_name: str, sha: str, summary: str
+    ) -> None:
+        """在提交上发布摘要评论。"""
+        try:
+            repo = self._client.get_repo(repo_name)
+            commit = repo.get_commit(sha)
+            commit.create_comment(body=summary)
+        except Exception as exc:
+            msg = f"Failed to publish commit summary on {repo_name}@{sha}: {exc}"
+            raise GitProviderError(msg) from exc
 
     async def publish_line_comments(
         self, repo_name: str, pr_number: int, comments: list[ReviewComment]
