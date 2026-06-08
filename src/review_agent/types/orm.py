@@ -1,0 +1,338 @@
+"""SQLAlchemy ORM 模型定义。
+
+遵循数据规范（§6）：
+- 所有表包含 UUID 主键、create_time（不可更新）、update_time（自动刷新）
+- 枚举字段存储为字符串
+- 关键实体支持软删除（is_deleted）
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, date, datetime
+
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from review_agent.types.enums import (
+    EventAction,
+    FindingCategory,
+    FindingSeverity,
+    Platform,
+    ReviewStatus,
+    UserRole,
+)
+
+
+class Base(DeclarativeBase):
+    """声明式基类。"""
+
+
+class TimestampMixin:
+    """时间戳 Mixin，提供 create_time 和 update_time。
+
+    create_time 仅在 INSERT 时写入，禁止更新。
+    update_time 在每次 UPDATE 时自动刷新。
+    """
+
+    create_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    update_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+
+class SoftDeleteMixin:
+    """软删除 Mixin。"""
+
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+# ── Project ──────────────────────────────────────────────
+
+
+class ProjectModel(Base, TimestampMixin, SoftDeleteMixin):
+    """在系统内注册的一个代码仓库。"""
+
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    platform: Mapped[Platform] = mapped_column(
+        String(32), nullable=False
+    )
+    repo_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    webhook_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    webhook_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # relationships
+    reviews: Mapped[list[ReviewModel]] = relationship(
+        "ReviewModel", back_populates="project", cascade="all, delete-orphan"
+    )
+
+
+# ── Review ───────────────────────────────────────────────
+
+
+class ReviewModel(Base, TimestampMixin, SoftDeleteMixin):
+    """一次 AI 评审任务的记录。"""
+
+    __tablename__ = "reviews"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id"), nullable=False
+    )
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    pr_title: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+    head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[ReviewStatus] = mapped_column(
+        String(32), default=ReviewStatus.PENDING, nullable=False
+    )
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    findings_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    report_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+    # relationships
+    project: Mapped[ProjectModel] = relationship(
+        "ProjectModel", back_populates="reviews"
+    )
+    findings: Mapped[list[FindingModel]] = relationship(
+        "FindingModel", back_populates="review", cascade="all, delete-orphan"
+    )
+
+
+# ── Finding ──────────────────────────────────────────────
+
+
+class FindingModel(Base, TimestampMixin, SoftDeleteMixin):
+    """评审发现的具体问题。"""
+
+    __tablename__ = "findings"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    review_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("reviews.id"), nullable=False
+    )
+    file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    line_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    category: Mapped[FindingCategory] = mapped_column(
+        String(32), nullable=False
+    )
+    severity: Mapped[FindingSeverity] = mapped_column(
+        String(32), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    suggestion: Mapped[str] = mapped_column(Text, nullable=False)
+    rule_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    is_valid: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # relationships
+    review: Mapped[ReviewModel] = relationship(
+        "ReviewModel", back_populates="findings"
+    )
+
+
+# ── Rule ─────────────────────────────────────────────────
+
+
+class RuleModel(Base, TimestampMixin, SoftDeleteMixin):
+    """企业自定义的代码审查规范条目。"""
+
+    __tablename__ = "rules"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[FindingCategory] = mapped_column(
+        String(32), nullable=False
+    )
+    severity: Mapped[FindingSeverity] = mapped_column(
+        String(32), nullable=False
+    )
+    languages: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    tags: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+# ── User ─────────────────────────────────────────────────
+
+
+class UserModel(Base, TimestampMixin, SoftDeleteMixin):
+    """管理后台用户。"""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    username: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    role: Mapped[UserRole] = mapped_column(
+        String(32), default=UserRole.VIEWER, nullable=False
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+# ── WebhookEvent ─────────────────────────────────────────
+
+
+class WebhookEventModel(Base, TimestampMixin):
+    """Webhook 原始事件日志（用于去重和审计）。"""
+
+    __tablename__ = "webhook_events"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id"), nullable=False
+    )
+    platform: Mapped[Platform] = mapped_column(
+        String(32), nullable=False
+    )
+    event_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    action: Mapped[EventAction] = mapped_column(
+        String(32), nullable=False
+    )
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    is_processed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+# ── PullRequest ────────────────────────────────────────────
+
+
+class PullRequestModel(Base, TimestampMixin):
+    """PR（Pull Request / Merge Request）跟踪记录。"""
+
+    __tablename__ = "pull_requests"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id"), nullable=False, index=True
+    )
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+    author: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    target_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    state: Mapped[str] = mapped_column(String(32), default="open", nullable=False)
+    merge_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_merged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    merged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    platform: Mapped[Platform] = mapped_column(
+        String(32), nullable=False
+    )
+
+
+# ── Commit ─────────────────────────────────────────────────
+
+
+class CommitModel(Base, TimestampMixin):
+    """提交记录（含纯分支提交）。"""
+
+    __tablename__ = "commits"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id"), nullable=False, index=True
+    )
+    sha: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    author: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_reviewed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+# ── Comment ────────────────────────────────────────────────
+
+
+class CommentModel(Base, TimestampMixin):
+    """对 Finding 的反馈/讨论评论。"""
+
+    __tablename__ = "comments"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    review_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("reviews.id"), nullable=False, index=True
+    )
+    finding_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("findings.id"), nullable=True
+    )
+    author: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+# ── ReviewErrorLog ─────────────────────────────────────────
+
+
+class ReviewErrorLog(Base, TimestampMixin):
+    """评审流水线错误日志。"""
+
+    __tablename__ = "review_errors"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.id"), nullable=True
+    )
+    review_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("reviews.id"), nullable=True
+    )
+    error_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    error_message: Mapped[str] = mapped_column(Text, nullable=False)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recovered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    frequency: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+# ── QualitySnapshot ────────────────────────────────────────
+
+
+class QualitySnapshot(Base, TimestampMixin):
+    """代码质量快照（预聚合数据，加速仪表盘展示）。"""
+
+    __tablename__ = "quality_snapshots"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id"), nullable=False, index=True
+    )
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    period: Mapped[str] = mapped_column(String(16), nullable=False)  # daily / weekly / monthly
+    avg_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    total_reviews: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_findings: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    critical_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    warning_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    info_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

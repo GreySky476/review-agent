@@ -1,78 +1,85 @@
 # 当前开发计划
 
-> 最后更新：2026-06-08 | 状态：M1 骨架搭建进行中
+> 最后更新：2026-06-08 | 状态：**全部基础阶段已完成（M1）**
 
 ---
 
-## M1 — 骨架搭建（当前阶段）
-
-> 目标：GitHub Webhook 自动评论
-
-### 待完成任务
-
-- [ ] 项目脚手架搭建（目录结构、基础配置、Makefile）
-- [ ] 核心数据模型定义（Project、Review、Finding）
-- [ ] 数据库初始化（SQLAlchemy + Alembic 迁移）
-- [ ] Webhook 接收端点（GitHub 签名验证）
-- [ ] 消息队列集成（Redis Stream / Celery）
-- [ ] 单维 AI 评审（安全维度）
-- [ ] 结果发布（PR 行级评论）
-- [ ] 基本管理后台（项目管理界面）
-- [ ] Makefile 与 CI 配置
-
-### 完成标准
+## 总体规划
 
 ```
-✅ GitHub Webhook 接收到 PR 事件后自动运行安全检查
-✅ 检查结果以行级评论发布到 PR 中
-✅ 管理后台可查看项目列表和评审记录
+P0 — 公共基础设施（"地基"）      ✅
+  └→ P1 — 数据层（"骨架"）       ✅
+      └→ P2 — 核心业务逻辑（"大脑"） ✅
+          └→ P3 — API 与集成（"接口"） ✅
+              └→ P4 — 部署与 CI（"环境"） ✅
 ```
 
----
-
-## M2 — AI 流水线
-
-> 目标：LangGraph 多维评审 + 规范知识库
-
-- [ ] LangGraph 多维度评审流水线
-- [ ] 规范知识库（向量检索 + 版本管理）
-- [ ] 代码分块：超大块结构评审
-- [ ] 评审报告生成（Markdown + HTML）
-- [ ] 结果聚合与发布策略决策
+> 🎉 **M1 基础骨架搭建完毕**。项目已具备完整开发、构建、部署链。
+> 后续进入 M2-M4 功能迭代阶段。
 
 ---
 
-## M3 — 平台扩展
+## P0 — 公共基础设施
 
-> 目标：支持 GitLab、Gitee + 完整后台
-
-- [ ] GitLab 平台适配器
-- [ ] Gitee 平台适配器
-- [ ] Hook 配置向导前端
-- [ ] 成员分析（雷达图）
-- [ ] 依赖风险面板
-
----
-
-## M4 — 生产加固
-
-> 目标：熔断降级 + 全链路追踪 + K8s 部署
-
-- [ ] 熔断降级机制
-- [ ] OpenTelemetry 全链路追踪
-- [ ] Prometheus 指标 + Grafana 面板
-- [ ] 私有模型部署（vLLM）
-- [ ] Kubernetes Helm Chart
+| 步骤 | 内容 | 状态 |
+|------|------|------|
+| 0.1 | 初始化 Git + pyproject.toml 完整依赖 | ✅ |
+| 0.2 | 搭建 `src/review_agent/` 包结构 | ✅ |
+| 0.3 | 定义错误类型层次 | ✅ |
+| 0.4 | 定义枚举常量（Platform, Severity, Status 等） | ✅ |
+| 0.5 | 配置管理（Pydantic Settings） | ✅ |
+| 0.6 | 日志与追踪配置（OpenTelemetry） | ✅ |
+| 0.7 | Makefile（封装 ruff/mypy/pytest/alembic/docker） | ✅ |
+| 0.8 | `.env.example` + README.md | ✅ |
 
 ---
 
-## 当前 Sprint 任务
+## P1 — 数据层
 
-| 任务 | 负责人 | 状态 | 预期完成 |
-|------|--------|------|---------|
-| 脚手架搭建 | - | ⏳ 待开始 | - |
-| 数据模型 | - | ⏳ 待开始 | - |
-| Webhook 端点 | - | ⏳ 待开始 | - |
+| 步骤 | 内容 | 状态 |
+|------|------|------|
+| 1.1 | Pydantic 数据模型（Project, Review, Finding, Rule, User） | ✅ |
+| 1.2 | SQLAlchemy ORM 模型 + 基类（UUID + 时间戳） | ✅ |
+| 1.3 | Alembic 初始化 + 初始迁移 | ✅ |
+| 1.4 | Repository 基类（通用 CRUD + 软删除） | ✅ |
+| 1.5 | ProjectRepo、ReviewRepo、FindingRepo、RuleRepo、UserRepo | ✅ |
+
+---
+
+## P2 — 核心业务逻辑
+
+| 步骤 | 内容 | 状态 |
+|------|------|------|
+| 2.1 | AI Provider 抽象 + DeepSeek 实现 | ✅ |
+| 2.2 | Git 平台抽象 + GitHub 适配器 | ✅ |
+| 2.3 | 代码分块服务 | ✅ |
+| 2.4 | 五维度评审引擎 | ✅ |
+| 2.5 | 超大块结构评审 | ✅ |
+| 2.6 | 结果聚合 + 发布策略 | ✅ |
+| 2.7 | 规范知识库服务 | ✅ |
+
+---
+
+## P3 — API 与集成
+
+| 步骤 | 内容 | 状态 |
+|------|------|------|
+| 3.1 | FastAPI 应用组装 + 异常处理 + 中间件 | ✅ |
+| 3.2 | Webhook 接收端点（GitHub/GitLab/Gitee） | ✅ |
+| 3.3 | 评审 REST API + 项目管理 REST API | ✅ |
+| 3.4 | ARQ 任务队列集成 + Worker 进程 | ✅ |
+
+---
+
+## P4 — 部署与 CI
+
+| 步骤 | 内容 | 状态 |
+|------|------|------|
+| 4.1 | Dockerfile（多阶段构建：development/production） | ✅ |
+| 4.2 | Docker Compose（api + worker + postgres + redis） | ✅ |
+| 4.3 | CI 配置（GitHub Actions：lint/typecheck/test/result） | ✅ |
+| 4.4 | `.dockerignore` | ✅ |
+| 4.5 | 文档更新（README + CI/CD 文档） | ✅ |
 
 ---
 
@@ -81,3 +88,4 @@
 - [项目设计文档](../project-design.md)
 - [架构总览](../architecture/overview.md)
 - [模块边界定义](../architecture/module-boundaries.md)
+- [实施规划](../../.claude/plans/quirky-rolling-riddle.md)

@@ -1,0 +1,69 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api } from '@/lib/api-client'
+
+export interface Project {
+  id: string
+  name: string
+  platform: 'github' | 'gitlab' | 'gitee'
+  repo_url: string
+  webhook_enabled: boolean
+  webhook_secret: string | null
+  recent_review_time: string | null
+  pr_count: number
+  review_count: number
+}
+
+export interface ProjectCreate {
+  name: string
+  platform: 'github' | 'gitlab' | 'gitee'
+  repo_url: string
+}
+
+interface ProjectsResponse {
+  items: Project[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export function useProjects(params?: {
+  platform?: string
+  search?: string
+  page?: number
+  pageSize?: number
+}) {
+  return useQuery<ProjectsResponse>({
+    queryKey: ['projects', params],
+    queryFn: async () => {
+      const { data } = await api.get('/projects', { params })
+      return data
+    },
+    staleTime: 2 * 60 * 1000,
+  })
+}
+
+export function useProject(id: string) {
+  return useQuery<Project>({
+    queryKey: ['project', id],
+    queryFn: async () => {
+      const { data } = await api.get(`/projects/${id}`)
+      return data
+    },
+    enabled: !!id,
+    staleTime: 10 * 60 * 1000,
+  })
+}
+
+export function useCreateProject() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (body: ProjectCreate) => {
+      const { data } = await api.post('/projects', body)
+      return data as Project
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+    },
+  })
+}

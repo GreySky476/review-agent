@@ -1,0 +1,121 @@
+# =============================================================================
+# review-agent — Docker Compose
+# =============================================================================
+# 启动全部服务:   docker compose up -d
+# 仅启动依赖:    docker compose up -d postgres redis
+# 查看日志:      docker compose logs -f api
+# 停止:          docker compose down -v
+# =============================================================================
+
+name: review-agent
+
+services:
+  # -- API 服务 -----------------------------------------------------------------
+  api:
+    build:
+      context: .
+      target: development
+    image: review-agent:dev
+    container_name: review-agent-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://review:review@postgres:5432/review_agent
+      - REDIS_URL=redis://redis:6379/0
+      - ARQ_REDIS_URL=redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./src:/app/src
+      - ./pyproject.toml:/app/pyproject.toml
+    healthcheck:
+      test: ["CMD", "python", "-c", "import http.client; c=http.client.HTTPConnection('localhost:8000'); c.request('GET','/healthz'); assert c.getresponse().status==200"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - review-net
+
+  # -- Worker 服务 --------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      target: development
+    image: review-agent:dev
+    container_name: review-agent-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://review:review@postgres:5432/review_agent
+      - REDIS_URL=redis://redis:6379/0
+      - ARQ_REDIS_URL=redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./src:/app/src
+      - ./pyproject.toml:/app/pyproject.toml
+    command: ["uv", "run", "arq", "review_agent.service.queue.WorkerSettings"]
+    networks:
+      - review-net
+
+  # -- PostgreSQL ---------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: review-agent-db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_USER=review
+      - POSTGRES_PASSWORD=review
+      - POSTGRES_DB=review_agent
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U review -d review_agent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - review-net
+
+  # -- Redis -------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: review-agent-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - review-net
+
+volumes:
+  pgdata:
+    driver: local
+  redisdata:
+    driver: local
+
+networks:
+  review-net:
+    driver: bridge

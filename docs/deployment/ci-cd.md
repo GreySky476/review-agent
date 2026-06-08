@@ -1,6 +1,6 @@
 # CI/CD 与部署运维
 
-> 文档版本：v1.0 | 更新日期：2026-06-08 | 关联文档：[架构总览](../architecture/overview.md)、[安全规范](../security/guidelines.md)
+> 文档版本：v1.1 | 更新日期：2026-06-08 | 关联文档：[架构总览](../architecture/overview.md)、[安全规范](../security/guidelines.md)
 
 ---
 
@@ -19,37 +19,29 @@ main  ←─── feature/xxx (Squash Merge)
 - `main` 分支保护，禁止直接推送
 - CI 必须全部通过 + 至少 1 人 Review 方可合并
 
-### 1.2 CI 流水线（GitHub Actions / GitLab CI）
+### 1.2 CI 流水线（GitHub Actions）
 
-| 阶段 | 步骤 | 触发条件 |
+流水线定义：`.github/workflows/verify.yml`
+
+| 任务 | 命令 | 触发条件 |
 |------|------|---------|
-| Lint | `ruff check .` | 每次提交 |
-| TypeCheck | `mypy src/` | 每次提交 |
-| Test | `pytest` | 每次提交 |
-| 安全扫描 | `bandit -r src/` + `pip-audit` | 每次提交 |
-| 覆盖率 | `pytest --cov-fail-under=80` | 每次提交 |
-| 构建 | `docker build` | 合并到 `main` |
-| E2E | docker-compose 启动完整环境 | 合并到 `main` |
+| **Lint** | `ruff check src/` + `ruff format src/ --check` | push/PR → main |
+| **TypeCheck** | `mypy src/` | push/PR → main |
+| **Test** | `pytest` (单元测试 + 集成测试) | push/PR → main |
+| **Result** | 汇总结果（lint + typecheck + test 全部通过 ✔） | push/PR → main |
+
+CI 环境服务依赖：
+- PostgreSQL 16（`pg_isready` 健康检查）
+- Redis 7（`redis-cli ping` 健康检查）
 
 ### 1.3 验证门禁
 
 ```yaml
-# .github/workflows/verify.yml (示例)
-name: Verify
-on: [push, pull_request]
-jobs:
-  verify:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -e ".[dev]"
-      - run: make lint
-      - run: make typecheck
-      - run: make test
-      - run: make security-scan
+# 合并到 main 的硬性条件：
+# 1. lint ✅  — ruff check 无错误
+# 2. format ✅ — ruff format 格式正确
+# 3. typecheck ✅ — mypy 通过
+# 4. test ✅ — pytest 全部通过，覆盖率 ≥ 70%
 ```
 
 ---
@@ -60,46 +52,84 @@ jobs:
 
 | 环境 | 用途 | 数据库 | 部署方式 |
 |------|------|--------|---------|
-| dev | 本地开发 | 开发用 PG + Redis | Docker Compose |
+| dev | 本地开发 | 开发用 PG + Redis | `docker compose up` |
 | staging | 预发布验证 | 独立 PG + Redis | Docker Compose / K8s |
 | production | 生产 | 主从 PG + 集群 Redis | Kubernetes |
 
 ### 2.2 Docker Compose
 
-```yaml
-# compose.yml (示例)
-services:
-  api:
-    build: .
-    ports: ["8000:8000"]
-    depends_on: [postgres, redis]
-  worker:
-    build: .
-    command: celery -A src.queue worker
-    depends_on: [redis, postgres]
-  postgres:
-    image: postgres:15
-    volumes: [pgdata:/var/lib/postgresql/data]
-  redis:
-    image: redis:7
+实际 `compose.yml` 中包含四个服务：
+
+| 服务 | 容器名 | 端口 | 依赖 |
+|------|--------|------|------|
+| **api** | `review-agent-api` | 8000 | postgres (healthy), redis |
+| **worker** | `review-agent-worker` | - | postgres (healthy), redis |
+| **postgres** | `review-agent-db` | 5432 | - |
+| **redis** | `review-agent-redis` | 6379 | - |
+
+```bash
+# 启动全部服务
+docker compose up -d
+
+# 仅启动后端依赖（开发时本地运行 API）
+docker compose up -d postgres redis
+
+# 查看 API 日志
+docker compose logs -f api
+
+# 停止并清理数据卷
+docker compose down -v
 ```
 
 ### 2.3 环境变量
 
 ```bash
-# .env.example — 复制为 .env 并填入实际值
-REVIEW_AGENT_DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/review_agent
+# .env — 参考 .env.example
+REVIEW_AGENT_DATABASE_URL=postgresql+asyncpg://review:review@localhost:5432/review_agent
 REVIEW_AGENT_REDIS_URL=redis://localhost:6379/0
-REVIEW_AGENT_S3_ENDPOINT=http://localhost:9000
-REVIEW_AGENT_MODEL_NAME=deepseek-v4-flash
+REVIEW_AGENT_ARQ_REDIS_URL=redis://localhost:6379/0
+REVIEW_AGENT_DEEPSEEK_API_KEY=sk-xxx
 REVIEW_AGENT_LOG_LEVEL=INFO
 ```
 
 ---
 
-## 三、可观测性
+## 三、Docker 构建
 
-### 3.1 日志
+### 3.1 多阶段构建
+
+```dockerfile
+FROM python:3.12-slim AS builder     # 依赖安装阶段
+FROM python:3.12-slim AS development   # 开发阶段（含 dev 依赖）
+FROM python:3.12-slim AS production    # 生产阶段（最小镜像）
+```
+
+```bash
+# 构建开发镜像
+docker build -t review-agent:dev --target development .
+
+# 构建生产镜像
+docker build -t review-agent:latest --target production .
+
+# 运行 API
+docker run -p 8000:8000 --env-file .env review-agent:dev
+
+# 运行 Worker
+docker run --env-file .env review-agent:dev uv run arq review_agent.service.queue.WorkerSettings
+```
+
+### 3.2 健康检查
+
+```yaml
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import http.client; c=http.client.HTTPConnection('localhost:8000'); c.request('GET','/healthz'); assert c.getresponse().status==200"
+```
+
+---
+
+## 四、可观测性
+
+### 4.1 日志
 
 - 结构化 JSON 日志，每行包含 `trace_id`
 - 日志级别：`DEBUG`/`INFO`/`WARNING`/`ERROR`
@@ -108,7 +138,7 @@ REVIEW_AGENT_LOG_LEVEL=INFO
 {"timestamp": "2026-06-08T10:00:00Z", "level": "INFO", "trace_id": "abc123", "event": "review.completed", "duration_ms": 45000}
 ```
 
-### 3.2 指标
+### 4.2 指标
 
 | 指标 | 类型 | 说明 |
 |------|------|------|
@@ -119,7 +149,7 @@ REVIEW_AGENT_LOG_LEVEL=INFO
 | `llm_call_success_rate` | Gauge | LLM 调用成功率 |
 | `comment_publish_total` | Counter | 评论发布总数 |
 
-### 3.3 告警
+### 4.3 告警阈值
 
 | 条件 | 通知对象 |
 |------|---------|
@@ -128,7 +158,7 @@ REVIEW_AGENT_LOG_LEVEL=INFO
 | 某仓库连续 3 次签名验证失败 | 项目管理员 |
 | 任务处理时间 P99 > 5 分钟 | 开发团队 |
 
-### 3.4 全链路追踪
+### 4.4 全链路追踪
 
 ```text
 Webhook 接收 ─→ 消息队列 ─→ Worker ─→ LLM 调用 ─→ Git API 调用
@@ -139,9 +169,9 @@ Webhook 接收 ─→ 消息队列 ─→ Worker ─→ LLM 调用 ─→ Git AP
 
 ---
 
-## 四、Kubernetes 部署参考
+## 五、Kubernetes 部署参考
 
-### 4.1 组件
+### 5.1 组件规格
 
 | 组件 | 副本数 | 资源 (requests/limits) |
 |------|--------|----------------------|
@@ -150,7 +180,7 @@ Webhook 接收 ─→ 消息队列 ─→ Worker ─→ LLM 调用 ─→ Git AP
 | Redis | 3 (集群) | 1c/2c, 2Gi/4Gi |
 | PostgreSQL | 主 + 2 从 | 2c/4c, 4Gi/8Gi |
 
-### 4.2 健康检查
+### 5.2 健康检查
 
 ```yaml
 readinessProbe:
@@ -159,11 +189,17 @@ readinessProbe:
     port: 8000
   initialDelaySeconds: 5
   periodSeconds: 10
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8000
+  initialDelaySeconds: 15
+  periodSeconds: 20
 ```
 
 ---
 
-## 五、成本控制
+## 六、成本控制
 
 - 单次评审 Token 上限 15,000（输入 + 输出）
 - 每项目可配每日/每月 Token 预算，超额暂停并通知
