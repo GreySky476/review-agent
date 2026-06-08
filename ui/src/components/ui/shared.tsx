@@ -145,30 +145,52 @@ export function PlatformBadge({ platform }: PlatformBadgeProps) {
   )
 }
 
-/* ── StatusDot ─────────────────────────────────────────────── */
+/* ── StatusDot / WebhookStatus ────────────────────────────── */
 interface StatusDotProps {
   status: 'connected' | 'disconnected' | 'pending'
 }
 
-const dotConfig = {
+const dotConfig: Record<string, string> = {
   connected: 'bg-success shadow-[0_0_6px_rgba(16,185,129,0.5)]',
   disconnected: 'bg-error shadow-[0_0_6px_rgba(239,68,68,0.5)]',
   pending: 'bg-warning shadow-[0_0_6px_rgba(245,158,11,0.5)]',
 }
 
-export function WebhookStatus({ status }: StatusDotProps) {
+export function WebhookStatus({
+  status,
+}: {
+  status: string
+}) {
+  const config: Record<string, { dot: string; label: string; description?: string }> = {
+    connected: {
+      dot: 'connected',
+      label: '已连接',
+    },
+    never_connected: {
+      dot: 'pending',
+      label: '等待连接',
+      description: 'Webhook 已启用但未收到任何事件',
+    },
+    inactive: {
+      dot: 'pending',
+      label: '连接超时',
+      description: '超过 24 小时未收到 Webhook 事件',
+    },
+    disconnected: {
+      dot: 'disconnected',
+      label: '未连接',
+    },
+  }
+  const cfg = config[status] || { dot: 'disconnected', label: status }
   return (
-    <span className="flex items-center gap-1.5">
+    <span className="inline-flex items-center gap-1.5" title={cfg.description}>
       <span
-        className={cn('inline-block h-2 w-2 rounded-full', dotConfig[status])}
+        className={cn(
+          'inline-block h-2 w-2 rounded-full',
+          dotConfig[cfg.dot] || dotConfig.disconnected,
+        )}
       />
-      <span className="text-sm text-muted">
-        {status === 'connected'
-          ? '已连接'
-          : status === 'disconnected'
-            ? '未连接'
-            : '待配置'}
-      </span>
+      <span className="text-sm text-muted">{cfg.label}</span>
     </span>
   )
 }

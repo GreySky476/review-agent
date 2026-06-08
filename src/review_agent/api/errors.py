@@ -2,13 +2,29 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from review_agent.config.database import get_session
+from review_agent.repo.review_error import ReviewErrorRepo
 from review_agent.types.models import ErrorStats
+from review_agent.types.orm import ReviewErrorLog
 
 router = APIRouter(tags=["errors"])
+
+
+def _parse_date(value: str | None) -> datetime | None:
+    """将 ISO 日期字符串转为 datetime，失败时返回 None。"""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
 
 
 @router.get("/errors")
@@ -19,12 +35,45 @@ async def list_errors(
     end_date: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """获取异常日志列表。"""
-    _ = (project_id, error_type, start_date, end_date)
+    repo = ReviewErrorRepo(db)
+
+    items = await repo.list_with_filters(
+        project_id=project_id,
+        error_type=error_type,
+        start_date=_parse_date(start_date),
+        end_date=_parse_date(end_date),
+        skip=(page - 1) * page_size,
+        limit=page_size,
+    )
+
+    # Count total
+    count_stmt = select(func.count(ReviewErrorLog.id))
+    if project_id:
+        count_stmt = count_stmt.where(ReviewErrorLog.project_id == project_id)
+    if error_type:
+        count_stmt = count_stmt.where(ReviewErrorLog.error_type == error_type)
+    result = await db.execute(count_stmt)
+    total = result.scalar() or 0
+
     return {
-        "items": [],
-        "total": 0,
+        "items": [
+            {
+                "id": e.id,
+                "project_id": e.project_id,
+                "review_id": e.review_id,
+                "error_type": e.error_type,
+                "error_message": e.error_message,
+                "error_detail": e.error_detail,
+                "frequency": e.frequency,
+                "recovered": e.recovered,
+                "create_time": e.create_time.isoformat() if e.create_time else None,
+            }
+            for e in items
+        ],
+        "total": total,
         "page": page,
         "page_size": page_size,
     }
@@ -34,7 +83,19 @@ async def list_errors(
 async def error_statistics(
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
+    db: AsyncSession = Depends(get_session),
 ) -> list[ErrorStats]:
     """获取异常聚合统计。"""
-    _ = (start_date, end_date)
-    return []
+    repo = ReviewErrorRepo(db)
+    rows = await repo.count_by_type(
+        start_date=_parse_date(start_date),
+        end_date=_parse_date(end_date),
+    )
+    return [
+        ErrorStats(
+            error_type=row["error_type"],
+            count=row["count"],
+            last_occurred=row["last_occurred"],
+        )
+        for row in rows
+    ]

@@ -14,14 +14,18 @@ from review_agent.config.database import get_session
 class MockResult:
     """模拟 SQLAlchemy Result。"""
 
-    def __init__(self, scalars_list: list | None = None):
+    def __init__(self, scalars_list: list | None = None, scalar_value=None):
         self._scalars_list = scalars_list or []
+        self._scalar_value = scalar_value
 
     def scalars(self) -> "MockResult":
         return self
 
     def all(self) -> list:
         return self._scalars_list
+
+    def scalar(self):
+        return self._scalar_value
 
     def scalar_one_or_none(self):
         return self._scalars_list[0] if self._scalars_list else None

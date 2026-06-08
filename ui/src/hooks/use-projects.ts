@@ -7,7 +7,8 @@ export interface Project {
   platform: 'github' | 'gitlab' | 'gitee'
   repo_url: string
   webhook_enabled: boolean
-  webhook_secret: string | null
+  webhook_status: 'connected' | 'never_connected' | 'inactive' | 'disconnected'
+  webhook_last_event_at: string | null
   recent_review_time: string | null
   pr_count: number
   review_count: number
@@ -61,6 +62,20 @@ export function useCreateProject() {
     mutationFn: async (body: ProjectCreate) => {
       const { data } = await api.post('/projects', body)
       return data as Project
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+    },
+  })
+}
+
+export function useDeleteProject() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { data } = await api.delete(`/projects/${id}`)
+      return data
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] })

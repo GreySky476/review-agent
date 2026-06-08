@@ -33,5 +33,9 @@ htmlcov/
 .coverage
 .coverage.*
 
+# Logs
+logs/
+*.log
+
 # Project specific
 docs/plans/archive/

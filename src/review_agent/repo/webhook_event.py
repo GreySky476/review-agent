@@ -55,3 +55,14 @@ class WebhookEventRepo(BaseRepository[WebhookEventModel]):  # type: ignore[misc]
             pr_number=pr_number,
             raw_payload=raw_payload,
         )
+
+    async def last_event_time(self, project_id: str) -> datetime | None:
+        """查询项目的最新 Webhook 事件时间。"""
+        stmt = (
+            select(WebhookEventModel.create_time)
+            .where(WebhookEventModel.project_id == project_id)
+            .order_by(WebhookEventModel.create_time.desc())
+            .limit(1)
+        )
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()  # type: ignore[no-any-return]

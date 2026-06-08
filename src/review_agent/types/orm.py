@@ -71,7 +71,7 @@ class ProjectModel(Base, TimestampMixin, SoftDeleteMixin):
     )
     repo_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     webhook_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    webhook_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    webhook_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # relationships
     reviews: Mapped[list[ReviewModel]] = relationship(

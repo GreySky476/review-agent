@@ -68,6 +68,8 @@ export function ProjectDetailPage() {
     page: commitPage,
   })
   const triggerReview = useTriggerCommitReview(id!)
+  const [showSettings, setShowSettings] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   if (projectError) {
     return <ErrorState message="项目加载失败" onRetry={refetchProject} />
@@ -101,14 +103,14 @@ export function ProjectDetailPage() {
             </button>
             <h1 className="text-2xl font-bold text-foreground">{project.name}</h1>
           </div>
-          <Button variant="secondary" size="sm" disabled>
+          <Button variant="secondary" size="sm" onClick={() => setShowSettings(true)}>
             ⚙️ 设置
           </Button>
         </div>
         <div className="mt-2 flex items-center gap-4 text-sm text-muted">
           <PlatformBadge platform={project.platform as 'github' | 'gitlab' | 'gitee'} />
           <span>·</span>
-          <WebhookStatus status={project.webhook_enabled ? 'connected' : 'disconnected'} />
+          <WebhookStatus status={project.webhook_status || (project.webhook_enabled ? 'connected' : 'disconnected')} />
           {project.recent_review_time && (
             <>
               <span>·</span>
@@ -392,6 +394,90 @@ export function ProjectDetailPage() {
               </LineChart>
             </ResponsiveContainer>
           )}
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-lg rounded-xl border border-border bg-surface p-6 shadow-lg">
+            <h2 className="text-lg font-bold text-foreground">项目设置</h2>
+            <p className="mt-1 text-sm text-muted">项目信息和 Webhook 配置</p>
+
+            <div className="mt-4 space-y-5">
+              {/* Basic Info */}
+              <div>
+                <h3 className="text-sm font-medium text-foreground">基本信息</h3>
+                <div className="mt-2 space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted">项目 ID</span>
+                    <span className="text-foreground font-mono text-xs">{project.id}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted">名称</span>
+                    <span className="text-foreground">{project.name}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted">平台</span>
+                    <PlatformBadge platform={project.platform as 'github' | 'gitlab' | 'gitee'} />
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted">仓库 URL</span>
+                    <span className="text-foreground font-mono text-xs truncate max-w-[240px]">{project.repo_url}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted">Webhook</span>
+                    <WebhookStatus status={project.webhook_status || (project.webhook_enabled ? 'connected' : 'disconnected')} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Webhook Config */}
+              <div className="rounded-lg border border-border bg-surface-alt p-4">
+                <h3 className="text-sm font-medium text-foreground">配置 Webhook</h3>
+                <p className="mt-1 text-xs text-muted">
+                  在 GitHub/GitLab/Gitee 的仓库设置中添加以下 Webhook URL 以自动同步 PR 数据：
+                </p>
+                <div className="mt-2 flex items-center gap-2 rounded-md bg-black/30 px-3 py-2 text-xs font-mono text-primary">
+                  <span className="flex-1 truncate font-mono text-xs">
+                    ngrok URL 替换: ngrok_地址/webhook/{project.platform}
+                  </span>
+                  <button
+                    onClick={async () => {
+                      const url = `http://localhost:8000/webhook/${project.platform}`
+                      try {
+                        await navigator.clipboard.writeText(url)
+                        setCopied(true)
+                        setTimeout(() => setCopied(false), 2000)
+                      } catch { /* fallback: ignore */ }
+                    }}
+                    className="shrink-0 text-xs text-muted hover:text-foreground transition-colors min-w-[4rem] text-center"
+                    title="复制"
+                  >
+                    {copied ? '已复制!' : '📋 复制'}
+                  </button>
+                </div>
+                <div className="mt-3 space-y-1 text-xs text-muted">
+                  <p>• 内容类型: <span className="text-foreground">application/json</span></p>
+                  <p>• 触发事件: <span className="text-foreground">Pull Request (opened, synchronize, closed)</span></p>
+                  <p>• 开发环境使用 ngrok 隧道暴露后端 8000 端口</p>
+                  <p>• 在 ngrok 终端查看公网 URL，替换上方地址</p>
+                </div>
+              </div>
+
+              {/* Sync Notice */}
+              <div className="rounded-lg border border-border/50 bg-surface-alt/50 p-3 text-xs text-muted">
+                PR 数据通过 Webhook 自动同步。配置 Webhook 后，新创建的 PR 将在提交时自动出现在列表中。
+                如尚未配置，PR 列表为空是正常现象。
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end">
+              <Button variant="secondary" size="md" onClick={() => setShowSettings(false)}>
+                关闭
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>
