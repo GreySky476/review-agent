@@ -165,4 +165,4 @@ make coverage    # 覆盖率报告
 
 ## 许可
 
-内部项目。
+MIT
