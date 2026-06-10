@@ -1,83 +1,56 @@
-# 当前开发计划
+# Plan: AI 评审规范文档 + 输出排序优化
 
-> 最后更新：2026-06-08 | 状态：M1 骨架搭建进行中
+> 状态：已完成 | 2026-06-10
 
 ---
 
-## M1 — 骨架搭建（当前阶段）
+## Context
 
-> 目标：GitHub Webhook 自动评论
+当前系统使用通用 prompt 调用 AI 进行代码评审，没有注入语言特定的编码规范，AI 判定标准过于自由。评审结果按类别分组，需要改为按重要性排列。
 
-### 待完成任务
+## 完成工作
 
-- [ ] 项目脚手架搭建（目录结构、基础配置、Makefile）
-- [ ] 核心数据模型定义（Project、Review、Finding）
-- [ ] 数据库初始化（SQLAlchemy + Alembic 迁移）
-- [ ] Webhook 接收端点（GitHub 签名验证）
-- [ ] 消息队列集成（Redis Stream / Celery）
-- [ ] 单维 AI 评审（安全维度）
-- [ ] 结果发布（PR 行级评论）
-- [ ] 基本管理后台（项目管理界面）
-- [ ] Makefile 与 CI 配置
+### 语言特定代码规范文档
+- 创建 6 个语言规范文档：`docs/coding/language-standards/python.md`（具体规范）+ `generic.md`（兜底）
+- 规范按重要性分节：资源管理 > 并发安全 > 正确性 > 安全 > 性能 > 代码规范
+- 新建 `src/review_agent/service/standards.py` — 扩展名→语言映射、`detect_language()`、`load_standards()`（带缓存和 fallback）
 
-### 完成标准
+### AI Prompt 注入
+- `commit_review.py` — `_ai_review_chunk()` 中注入 `load_standards(chunk.file_path)` 到 system prompt
+- `review_graph/evaluation.py` — 拆分 `_AI_REVIEW_SYSTEM_PROMPT` 为 `_AI_REVIEW_BASE_PROMPT`，在 `_ai_review()` 中动态拼接语言规范
 
+### 输出排序优化
+- `publisher.py` — `generate_summary()` 改为按严重性降序（CRITICAL > WARNING > INFO）+ 类别优先级（BUG > SECURITY > PERFORMANCE > STRUCTURE > STYLE > DEPENDENCY）排序
+- 输出格式从按类别分组的列表改为 Markdown 表格（| 严重性 | 类别 | 位置 | 问题 | 建议 |）
+
+### 测试
+- `tests/unit/test_standards.py` — 15 个测试覆盖语言检测、规范加载、缓存、fallback
+- `tests/unit/test_publisher.py` — 新增 `test_summary_sorted_by_severity` 验证排序
+
+## 验证结果
+
+```text
+ruff check .    → 通过（仅预存 issue）
+mypy src/       → 通过（预存 Python 3.12 语法标记，非本次改动）
+pytest          → 223 passed ✓
 ```
-✅ GitHub Webhook 接收到 PR 事件后自动运行安全检查
-✅ 检查结果以行级评论发布到 PR 中
-✅ 管理后台可查看项目列表和评审记录
-```
 
----
+## 修改文件清单
 
-## M2 — AI 流水线
+| 文件 | 操作 |
+|------|------|
+| `docs/coding/language-standards/python.md` | NEW |
+| `docs/coding/language-standards/generic.md` | NEW |
+| `src/review_agent/service/standards.py` | NEW |
+| `src/review_agent/service/commit_review.py` | MODIFY |
+| `src/review_agent/service/review_graph/evaluation.py` | MODIFY |
+| `src/review_agent/service/publisher.py` | MODIFY |
+| `tests/unit/test_standards.py` | NEW |
+| `tests/unit/test_publisher.py` | MODIFY |
+| `docs/plans/current.md` | MODIFY |
 
-> 目标：LangGraph 多维评审 + 规范知识库
+## 后续规划
 
-- [ ] LangGraph 多维度评审流水线
-- [ ] 规范知识库（向量检索 + 版本管理）
-- [ ] 代码分块：超大块结构评审
-- [ ] 评审报告生成（Markdown + HTML）
-- [ ] 结果聚合与发布策略决策
-
----
-
-## M3 — 平台扩展
-
-> 目标：支持 GitLab、Gitee + 完整后台
-
-- [ ] GitLab 平台适配器
-- [ ] Gitee 平台适配器
-- [ ] Hook 配置向导前端
-- [ ] 成员分析（雷达图）
-- [ ] 依赖风险面板
-
----
-
-## M4 — 生产加固
-
-> 目标：熔断降级 + 全链路追踪 + K8s 部署
-
-- [ ] 熔断降级机制
-- [ ] OpenTelemetry 全链路追踪
-- [ ] Prometheus 指标 + Grafana 面板
-- [ ] 私有模型部署（vLLM）
-- [ ] Kubernetes Helm Chart
-
----
-
-## 当前 Sprint 任务
-
-| 任务 | 负责人 | 状态 | 预期完成 |
-|------|--------|------|---------|
-| 脚手架搭建 | - | ⏳ 待开始 | - |
-| 数据模型 | - | ⏳ 待开始 | - |
-| Webhook 端点 | - | ⏳ 待开始 | - |
-
----
-
-## 参考资料
-
-- [项目设计文档](../project-design.md)
-- [架构总览](../architecture/overview.md)
-- [模块边界定义](../architecture/module-boundaries.md)
+1. 增加更多语言规范文档（JavaScript/TypeScript、Go、Rust、Java）
+2. 规则检查维度 `dimensions/base.py` 增加跨语言模式识别
+3. 考虑支持用户自定义规范注入（企业级规则）

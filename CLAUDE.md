@@ -63,6 +63,7 @@
 | 查阅代码风格、命名约定 | `docs/coding/style.md` |
 | 了解测试策略、覆盖率要求 | `docs/testing/strategy.md` |
 | 查阅 API 设计、错误处理规范 | `docs/api/conventions.md` |
+| 查阅数据库表结构、ER 关系 | `docs/database/schema.md` |
 | 了解安全编码、敏感信息处理 | `docs/security/guidelines.md` |
 | 查阅 CI/CD、环境配置 | `docs/deployment/ci-cd.md` |
 | 排查常见错误 | `docs/runbooks/common-errors.md` |
@@ -108,7 +109,7 @@
 
 | 日期 | 变更内容 | 变更人 |
 |------|----------|--------|
-| YYYY-MM-DD | 初始化 | - |
+| 2026-06-09 | GitHub Push Webhook 自动评审：CommitReviewService + 文件级并发 + 文档更新 | GreySky476 |
 
 ## 文件结构
 

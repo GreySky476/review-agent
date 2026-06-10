@@ -71,6 +71,7 @@
 - 签名验证：`X-Hub-Signature-256`（HMAC-SHA256）
 - 事件头：`X-GitHub-Event: pull_request`
 - 支持动作：`opened`、`synchronize`、`reopened`
+- **Ping 事件**：`X-GitHub-Event: ping`，用于 webhook 连通性验证，返回 `{"status": "pong", "hook_id": "..."}`
 
 ### 3.2 GitLab
 
@@ -107,7 +108,37 @@
 | PATCH | `/api/v1/projects/{project_id}` | 更新项目配置 |
 | DELETE | `/api/v1/projects/{project_id}` | 删除项目（软删除） |
 
-### 4.3 规范管理
+### 4.3 平台健康检查
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/healthz` | 服务存活检查（K8s 探针用） |
+| GET | `/health/platforms` | 所有平台连通性状态列表 |
+| GET | `/health/platforms/{platform}` | 指定平台（github/gitee/gitlab）详情 |
+| POST | `/health/platforms/check` | 手动触发一次连通性检测 |
+
+响应示例：
+
+```json
+[
+  {
+    "platform": "github",
+    "status": "connected",
+    "latency_ms": 1403,
+    "error_message": null,
+    "last_checked_at": "2026-06-09T17:30:00+00:00"
+  },
+  {
+    "platform": "gitee",
+    "status": "error",
+    "latency_ms": 269,
+    "error_message": "HTTP 401: Unauthorized",
+    "last_checked_at": "2026-06-09T17:30:00+00:00"
+  }
+]
+```
+
+### 4.4 规范管理
 
 | 方法 | 路径 | 说明 |
 |------|------|------|

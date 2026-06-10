@@ -1,6 +1,6 @@
 # 模块边界定义
 
-> 文档版本：v1.0 | 更新日期：2026-06-08 | 关联文档：[架构总览](overview.md)、[API 规范](../api/conventions.md)
+> 文档版本：v1.1 | 更新日期：2026-06-09 | 关联文档：[架构总览](overview.md)、[API 规范](../api/conventions.md)
 
 ---
 
@@ -71,33 +71,62 @@ types/ ──→ config/ ──→ repo/ ──→ service/ ──→ api/ ─�
 src/
 ├── types/                     # 数据模型
 │   ├── __init__.py
-│   ├── review.py              # 评审相关模型
-│   └── project.py             # 项目相关模型
+│   ├── enums.py               # 枚举常量
+│   ├── exceptions.py          # 异常定义
+│   ├── models.py              # Pydantic 请求/响应模型
+│   └── orm.py                 # SQLAlchemy ORM 模型
 ├── config/
 │   ├── __init__.py
+│   ├── database.py            # DB Session 管理
+│   ├── logging.py             # 日志配置
 │   └── settings.py            # Pydantic Settings
-├── repo/
+├── repo/                      # 数据访问层
 │   ├── __init__.py
+│   ├── base.py                # 通用 CRUD 基类
+│   ├── commit.py              # 提交 CRUD
+│   ├── comment.py             # 评论 CRUD
+│   ├── finding.py             # Finding CRUD
 │   ├── project.py             # 项目 CRUD
+│   ├── pull_request.py        # PR CRUD
+│   ├── quality_snapshot.py    # 质量快照 CRUD
 │   ├── review.py              # 评审记录 CRUD
-│   └── finding.py             # Finding CRUD
-├── service/
+│   ├── review_error.py        # 错误日志 CRUD
+│   ├── rule.py                # 规则 CRUD
+│   ├── user.py                # 用户 CRUD
+│   └── webhook_event.py       # Webhook 事件 CRUD
+├── service/                   # 业务逻辑层
 │   ├── __init__.py
-│   ├── review_orchestrator.py # 评审编排
 │   ├── chunking.py            # 代码分块
-│   ├── dimensions/            # 各维度评审
+│   ├── commit_review.py       # Push 评审编排（M2）
+│   ├── publisher.py           # 结果聚合与发布
+│   ├── queue.py               # ARQ 任务队列集成
+│   ├── ai/                    # AI 模型调用
 │   │   ├── __init__.py
-│   │   ├── security.py
-│   │   ├── bug.py
-│   │   ├── performance.py
-│   │   ├── style.py
-│   │   └── dependency.py
-│   └── publisher.py           # 结果发布
-├── api/
+│   │   ├── base.py            # AIProvider 抽象
+│   │   ├── deepseek.py        # DeepSeek 实现
+│   │   └── types.py           # AI 数据模型
+│   ├── dimensions/            # 评审维度
+│   │   ├── __init__.py
+│   │   ├── base.py            # 五维评审 + Finding 定义
+│   │   └── structure.py       # 超大块结构评审
+│   ├── git/                   # Git 平台适配
+│   │   ├── __init__.py
+│   │   ├── base.py            # GitProvider 抽象
+│   │   └── github_provider.py # GitHub 实现
+│   └── knowledge/             # 规范知识库
+│       ├── __init__.py
+│       └── service.py
+├── api/                       # API 路由层
 │   ├── __init__.py
-│   ├── webhook.py             # Webhook 接收
+│   ├── app.py                 # FastAPI 应用组装
+│   ├── commits.py             # 提交 API
+│   ├── dashboard.py           # 仪表盘 API
+│   ├── errors.py              # 错误日志 API
+│   ├── health.py              # 健康检查
+│   ├── projects.py            # 项目管理 API
+│   ├── prs.py                 # PR 管理 API
 │   ├── reviews.py             # 评审 API
-│   └── admin.py               # 管理后台 API
+│   └── webhook.py             # Webhook 接收
 └── ui/                        # 前端代码（另行管理）
     ├── src/
     ├── package.json

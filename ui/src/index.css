@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+/* ── Design Tokens — Warm Claude-inspired Theme ─────────────── */
+@theme {
+  /* Fonts */
+  --font-sans: 'Inter', 'Fira Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Fira Code', 'JetBrains Mono', 'SF Mono', monospace;
+
+  /* Colors - Primary (Warm Amber — replaces blue) */
+  --color-primary: #D97706;
+  --color-primary-hover: #B45309;
+  --color-on-primary: #FFFFFF;
+
+  /* Colors - Surface (Light warm tones) */
+  --color-surface: #FFFFFF;
+  --color-surface-hover: #F5F4F0;
+  --color-surface-alt: #F0EFEB;
+
+  /* Colors - Text (Warm near-black / warm grays) */
+  --color-foreground: #292524;
+  --color-muted: #78716C;
+  --color-muted-more: #A8A29E;
+
+  /* Colors - Border (Warm light grays) */
+  --color-border: #E6E4DD;
+  --color-border-light: #F0EFEB;
+
+  /* Colors - Semantic */
+  --color-success: #65A30D;
+  --color-warning: #D97706;
+  --color-error: #DC2626;
+  --color-info: #0EA5E9;
+
+  /* Colors - Platform */
+  --color-github: #24292F;
+  --color-gitlab: #FC6D26;
+  --color-gitee: #C71D23;
+
+  /* Colors - PR State */
+  --color-pr-open: #65A30D;
+  --color-pr-merged: #7C3AED;
+  --color-pr-closed: #A8A29E;
+
+  /* Colors - Severity */
+  --color-critical: #DC2626;
+  --color-warning-sev: #D97706;
+  --color-info-sev: #0EA5E9;
+
+  /* Radius */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  /* Shadows — warm black for softer, natural look */
+  --shadow-sm: 0 1px 2px rgba(41, 37, 36, 0.05);
+  --shadow-md: 0 4px 6px rgba(41, 37, 36, 0.06);
+  --shadow-lg: 0 10px 15px rgba(41, 37, 36, 0.08);
+  --shadow-glow: none; /* removed blue glow — not needed in light theme */
+}
+
+/* ── Base Styles ──────────────────────────────────────────── */
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: #FAFAF8;
+  color: var(--color-foreground);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted-more);
+}
+
+/* ── Utilities ─────────────────────────────────────────────── */
+@utility text-balance {
+  text-wrap: balance;
+}

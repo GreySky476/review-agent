@@ -1,6 +1,6 @@
 # 常见错误排查手册
 
-> 文档版本：v1.0 | 更新日期：2026-06-08 | 关联文档：[CI/CD](../deployment/ci-cd.md)、[安全规范](../security/guidelines.md)
+> 文档版本：v1.1 | 更新日期：2026-06-09 | 关联文档：[CI/CD](../deployment/ci-cd.md)、[安全规范](../security/guidelines.md)
 
 ---
 
@@ -61,13 +61,24 @@ docker stats <worker_container>
 # - Redis 连接失败: 检查 REDIS_URL 配置
 ```
 
-### 2.3 评审结果不完整
+### 2.3 Push 评审失败
+
+| 现象 | 可能原因 | 排查 |
+|------|---------|------|
+| Webhook 返回 `ignored` | 项目未注册 / 仓库不匹配 | 检查 `ProjectRepo` 中是否有对应 `repo_url` |
+| 评审未触发（日志显示 enqueue 正常） | ARQ Worker 未运行 | `docker compose ps` 确认 worker 存活 |
+| Commit 评论未发布 | GitHub Token 无权限 / 仓库不存在 | 检查 `REVIEW_AGENT_GITHUB_TOKEN` 权限（需 `repo` scope） |
+| 文件被跳过 | 扩展名在 `review_skip_extensions` 中 | 检查配置 |
+| 只有规则检查结果，无 AI 评审 | AI API Key 未配置或调用超时 | 检查 `REVIEW_AGENT_AI_API_KEY` |
+
+### 2.4 评审结果不完整
 
 | 原因 | 解决方案 |
 |------|---------|
 | Diff 拉取失败 | 检查 Git 平台 Token 权限 |
 | 部分维度超时 | 查看 LLM 调用记录，增大超时时间 |
 | 超大块安全检查失败 | tree-sitter 解析错误，确认代码语言支持 |
+| AI 响应解析失败 | 查看 DeepSeek 返回的原始内容是否非 JSON 格式 |
 
 ---
 
