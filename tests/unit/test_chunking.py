@@ -1,6 +1,6 @@
 """Tests for code chunking service."""
 
-from review_agent.service.chunking import CodeChunk, chunk_file, _estimate_tokens, _extract_functions
+from review_agent.service.chunking import _estimate_tokens, _extract_functions, chunk_file
 from review_agent.types.enums import ChunkPath
 
 

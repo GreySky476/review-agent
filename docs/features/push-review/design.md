@@ -1,6 +1,6 @@
 # GitHub Push Webhook 自动代码评审 — 设计文档
 
-> 文档版本：v1.0 | 更新日期：2026-06-09 | 关联：`docs/project-design.md`
+> 文档版本：v1.1 | 更新日期：2026-06-10 | 关联：`docs/project-design.md`
 
 ---
 
@@ -61,11 +61,16 @@ GitHub Commit 评论
 
 ### 3.1 AI Prompt 设计
 
-AI 调用仅发送函数源码 + 该函数的 diff patch，不发送完整文件：
+AI 调用发送函数源码 + diff + 注入语言特定评审规范：
 
 ```
-System: 你是一位资深代码评审专家。审查代码变更，找出正确性缺陷、
-        安全风险、错误处理遗漏和逻辑错误。以 JSON 数组格式返回。
+System: ## 语言特定代码评审规范
+        （由 standards.py 自动检测语言并注入对应规范 Markdown，
+         如 python.md 按重要性分层：资源管理>并发>正确性>安全>性能>规范）
+
+        你是一位资深代码评审专家。请严格参照上述规范审查下方的代码变更，
+        找出其中的违规项、正确性缺陷、安全风险、错误处理遗漏和逻辑错误。
+        以 JSON 数组格式返回。
 
 User:   ## 函数源码（path/to/file.py）
         ```
@@ -91,6 +96,36 @@ User:   ## 函数源码（path/to/file.py）
   }
 ]
 ```
+
+### 3.2 输出格式
+
+评审结果以 Markdown 表格输出，按重要性排序：
+
+```
+## AI 代码评审结果
+
+**总分：92/100** — 🟢 优秀
+
+### 概览
+
+| 严重性 | 数量 |
+|--------|------|
+| 🔴 Critical | 1 |
+| 🟡 Warning | 2 |
+| 🔵 Info | 0 |
+
+### 问题详情
+
+| 严重性 | 类别 | 位置 | 问题 | 建议 |
+|--------|------|------|------|------|
+| 🔴 **CRITICAL** | BUG | `app.py:42` | 资源未关闭 | 使用 `with` 语句管理文件句柄 |
+| 🟡 **WARNING** | SECURITY | `db.py:15` | SQL 注入风险 | 使用参数化查询 |
+| 🟡 **WARNING** | BUG | `util.py:33` | 裸 except | 指定异常类型 |
+| 🔵 **INFO** | STYLE | `views.py:120` | 函数过长 | 拆分为小函数 |
+```
+
+排序规则：先按严重性降序（CRITICAL → WARNING → INFO），
+同一严重性内按类别优先级降序（BUG → SECURITY → PERFORMANCE → STRUCTURE → STYLE → DEPENDENCY）。
 
 ---
 
@@ -152,3 +187,50 @@ User:   ## 函数源码（path/to/file.py）
 | `src/review_agent/api/webhook.py` | 修改 | +push 事件处理 |
 | `tests/unit/test_commit_review.py` | 新增 | 11 个测试 |
 | `tests/unit/test_queue.py` | 修改 | worker 测试 |
+
+---
+
+## 七、LangGraph 集成
+
+从 M2 起，评审流水线可选由 LangGraph StateGraph 驱动。
+
+### 7.1 模块路径
+
+```
+src/review_agent/service/review_graph/
+├── state.py          # ReviewState TypedDict + reducer
+├── graph.py          # StateGraph 构建与编译
+├── evaluation.py     # 5 维度规则节点 + AI/结构评审节点
+├── pipeline.py       # 流程编排节点（过滤、拉取、聚合、摘要、发布）
+├── edges.py          # 条件路由（Send 并行分发）
+└── checkpointer.py   # 检查点器
+```
+
+### 7.2 启用方式
+
+配置项 `REVIEW_AGENT_USE_LANGGRAPH=true` 开启。开启后行为不变（Phase 1.1），但获得：
+
+- **有状态编排**：TypedDict 状态透传所有节点
+- **并行规则检查**：5 个维度通过 `Send()` API 并行执行（Phase 1.2）
+- **Checkpointing**：支持进程内中断恢复
+- **可观测**：LangGraph 内置步骤追踪
+
+### 7.3 节点流转图
+
+```
+START → filter_files → fetch_and_chunk
+    ↓ (fanout_to_dimensions — 5 × Send)
+run_security / run_bug / run_perf / run_style / run_dep
+    ↓ (汇聚到 dispatch_chunks)
+dispatch_chunks → route_chunks (按 chunk 类型)
+    ├── ai_review (正常 chunk)
+    └── structural_review (超大 chunk)
+    ↓
+aggregate → summarize → publish → END
+```
+
+### 7.4 容错
+
+AI Provider 为 `None` 时，`ai_review` 节点跳过，仅执行规则和结构评审。
+Git 发布失败仅记录警告，不影响评审结果。
+所有节点异常由 LangGraph 捕获，状态可检查点恢复。

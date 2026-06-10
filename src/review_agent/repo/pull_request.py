@@ -15,9 +15,7 @@ class PullRequestRepo(BaseRepository[PullRequestModel]):  # type: ignore[misc]
     def _model(self) -> type[PullRequestModel]:
         return PullRequestModel  # type: ignore[no-any-return]
 
-    async def get_by_pr_number(
-        self, project_id: str, pr_number: int
-    ) -> PullRequestModel | None:
+    async def get_by_pr_number(self, project_id: str, pr_number: int) -> PullRequestModel | None:
         """按项目 ID 和 PR 编号查询。"""
         stmt = select(PullRequestModel).where(
             PullRequestModel.project_id == project_id,

@@ -1,0 +1,59 @@
+"""ReviewState — 贯穿 LangGraph 评审流水线的共享状态。"""
+
+from __future__ import annotations
+
+from typing import Annotated, TypedDict
+
+from review_agent.service.chunking import CodeChunk
+from review_agent.service.dimensions.base import DimensionFinding
+from review_agent.service.git.base import PRFile
+from review_agent.types.enums import ReviewStatus
+
+
+def _reduce_findings(
+    existing: list[DimensionFinding] | None,
+    updates: list[DimensionFinding] | None,
+) -> list[DimensionFinding]:
+    """Reducer: Send() 多并行分支通过此 reducer 安全合并到同一 key。
+
+    LangGraph 的 Annotated[list[T], reducer] 模式允许在多个并行 node
+    同时写入同一 state key 时自动合并，不会覆盖。
+    """
+    if existing is None:
+        return updates or []
+    if updates is None:
+        return existing
+    return existing + updates
+
+
+class ReviewState(TypedDict):
+    """贯穿 LangGraph 评审流水线的共享状态。
+
+    TypedDict 保证类型安全，配合 Annotated reducer 支持 Send() 并行写入。
+    """
+
+    # ── 输入（一次写入，永不改变） ──
+    repo_name: str
+    sha: str
+    files: list[PRFile]
+
+    # ── 处理中状态（逐步填充） ──
+    target_files: list[PRFile]
+    chunks: list[CodeChunk]
+    source_codes: dict[str, str]
+
+    # ── 挂起的 chunk（由 Send 设置，节点读取后用 reducer 合并 findings） ──
+    pending_chunk: CodeChunk | None
+
+    # ── Findings（Annotated reducer 累加，Send 并发安全） ──
+    rule_findings: Annotated[list[DimensionFinding], _reduce_findings]
+    ai_findings: Annotated[list[DimensionFinding], _reduce_findings]
+    structural_findings: Annotated[list[DimensionFinding], _reduce_findings]
+
+    # ── 输出 ──
+    all_findings: list[DimensionFinding]
+    deduped_findings: list[DimensionFinding]
+    score: int
+    summary_markdown: str
+    error: str | None
+    status: ReviewStatus

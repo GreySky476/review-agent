@@ -1,7 +1,7 @@
 """Tests for API endpoints."""
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -260,7 +260,12 @@ class TestCommitEndpoints:
         resp = await client.get("/api/v1/projects/p1/commits?branch=main&author=me")
         assert resp.status_code == 200
 
-    async def test_trigger_commit_review(self, client: AsyncClient) -> None:
+    async def test_trigger_commit_review(self, client: AsyncClient, mock_db: AsyncSession) -> None:
+        # Mock project lookup so _extract_repo_name works
+        project_mock = MagicMock()
+        type(project_mock).repo_url = PropertyMock(return_value="https://github.com/owner/repo")
+        mock_db.get.return_value = project_mock
+
         resp = await client.post(
             "/api/v1/projects/p1/commits/abc123/review",
             json={"sha": "abc123", "mention_user": "reviewer"},

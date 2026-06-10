@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import github.Auth
 from github import Github
@@ -68,9 +69,7 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
             msg = f"Failed to fetch diff for {repo_name}#{pr_number}: {exc}"
             raise GitProviderError(msg) from exc
 
-    async def get_file_content(
-        self, repo_name: str, file_path: str, ref: str
-    ) -> str | None:
+    async def get_file_content(self, repo_name: str, file_path: str, ref: str) -> str | None:
         try:
             repo = self._client.get_repo(repo_name)
             content = repo.get_contents(file_path, ref=ref)
@@ -105,9 +104,7 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
             msg = f"Failed to fetch commit diff {repo_name}@{sha}: {exc}"
             raise GitProviderError(msg) from exc
 
-    async def publish_commit_summary(
-        self, repo_name: str, sha: str, summary: str
-    ) -> None:
+    async def publish_commit_summary(self, repo_name: str, sha: str, summary: str) -> None:
         """在提交上发布摘要评论。"""
         try:
             repo = self._client.get_repo(repo_name)
@@ -136,12 +133,47 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
             msg = f"Failed to publish line comments on {repo_name}#{pr_number}: {exc}"
             raise GitProviderError(msg) from exc
 
-    async def publish_summary_comment(
-        self, repo_name: str, pr_number: int, summary: str
-    ) -> None:
+    async def publish_summary_comment(self, repo_name: str, pr_number: int, summary: str) -> None:
         repo, pr = self._get_repo_and_pr(repo_name, pr_number)
         try:
             pr.create_issue_comment(summary)
         except Exception as exc:
             msg = f"Failed to publish summary on {repo_name}#{pr_number}: {exc}"
             raise GitProviderError(msg) from exc
+
+    async def check_webhook(self, repo_name: str, webhook_url: str) -> dict[str, Any]:
+        """检查仓库是否已配置指定 URL 的 Webhook。
+
+        返回: found/hook_id/active/last_response
+        """
+        try:
+            repo = self._client.get_repo(repo_name)
+            hooks = repo.get_hooks()
+            for hook in hooks:
+                config_url = hook.config.get("url", "") if hook.config else ""
+                if webhook_url in config_url:
+                    return {
+                        "found": True,
+                        "hook_id": hook.id,
+                        "active": hook.active,
+                        "last_response": None,
+                    }
+            return {"found": False, "hook_id": None, "active": None, "last_response": None}
+        except Exception as exc:
+            logger.warning("Failed to check webhook for %s: %s", repo_name, exc)
+            return {"found": False, "hook_id": None, "active": None, "last_response": str(exc)}
+
+    async def send_webhook_ping(self, repo_name: str, hook_id: int) -> bool:
+        """向指定 Webhook 发送测试 ping。
+
+        Returns: True if ping was sent successfully.
+        """
+        try:
+            repo = self._client.get_repo(repo_name)
+            hook = repo.get_hook(hook_id)
+            hook.test()
+            logger.info("Webhook ping sent to %s hook #%d", repo_name, hook_id)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to ping webhook for %s: %s", repo_name, exc)
+            return False

@@ -17,12 +17,12 @@ import {
 import { useState } from 'react'
 
 const PIE_COLORS: Record<string, string> = {
-  security: '#EF4444',
-  bug: '#F59E0B',
-  performance: '#3B82F6',
-  style: '#10B981',
-  dependency: '#A855F7',
-  structure: '#EC4899',
+  security: '#DC2626',
+  bug: '#D97706',
+  performance: '#0EA5E9',
+  style: '#65A30D',
+  dependency: '#A21CAF',
+  structure: '#E11D48',
 }
 
 const PIE_LABELS: Record<string, string> = {
@@ -117,22 +117,22 @@ export function DashboardPage() {
           ) : (
             <ResponsiveContainer width="100%" height={280}>
               <LineChart data={trends.items}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis dataKey="date" stroke="#64748B" fontSize={12} />
-                <YAxis domain={[0, 100]} stroke="#64748B" fontSize={12} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#E6E4DD" />
+                <XAxis dataKey="date" stroke="#A8A29E" fontSize={12} />
+                <YAxis domain={[0, 100]} stroke="#A8A29E" fontSize={12} />
                 <Tooltip
                   contentStyle={{
-                    background: '#1E293B',
-                    border: '1px solid #334155',
+                    background: '#FFFFFF',
+                    border: '1px solid #E6E4DD',
                     borderRadius: '8px',
-                    color: '#F8FAFC',
+                    color: '#292524',
                   }}
                 />
                 <Line
                   type="monotone"
                   dataKey="avg_score"
                   name="平均分"
-                  stroke="#2563EB"
+                  stroke="#D97706"
                   strokeWidth={2}
                   dot={false}
                 />
@@ -168,10 +168,10 @@ export function DashboardPage() {
                 </Pie>
                 <Tooltip
                   contentStyle={{
-                    background: '#1E293B',
-                    border: '1px solid #334155',
+                    background: '#FFFFFF',
+                    border: '1px solid #E6E4DD',
                     borderRadius: '8px',
-                    color: '#F8FAFC',
+                    color: '#292524',
                   }}
                 />
                 <Legend />

@@ -48,6 +48,10 @@ class AppSettings(BaseSettings):
     ai_api_key: str = Field(default="", description="AI API 密钥")
     ai_request_timeout: int = Field(default=30, description="AI 请求超时（秒）")
     ai_max_retries: int = Field(default=1, description="AI 请求最大重试次数")
+    ai_review_max_tokens: int = Field(
+        default=8192,
+        description="AI 评审最大输出 Token（含推理 Token）",
+    )
 
     # ── 代码分块 ─────────────────────────────────────────
     chunk_normal_max: int = Field(default=1500, description="正常块最大 Token 数")
@@ -69,12 +73,29 @@ class AppSettings(BaseSettings):
         default=5,
         description="触发详细报告的 critical/warning Finding 数量阈值",
     )
+    use_langgraph: bool = Field(
+        default=False,
+        description="启用 LangGraph 评审流水线（有状态、可观测、可恢复）",
+    )
 
     # ── Git 平台 ─────────────────────────────────────────
     github_token: str = Field(default="", description="GitHub API Token")
 
     # ── Webhook ──────────────────────────────────────────
     webhook_dedup_window: int = Field(default=60, description="Webhook 事件去重窗口（秒）")
+    public_url: str = Field(
+        default="http://localhost:8000",
+        description="服务公网地址（用于 Webhook 连通性验证）",
+    )
+    # ── 健康检查 ─────────────────────────────────────────
+    health_check_interval_minutes: int = Field(
+        default=1,
+        description="平台连通性心跳检测间隔（分钟），设为 0 禁用",
+    )
+    webhook_health_interval_minutes: int = Field(
+        default=5,
+        description="Webhook 连接巡检间隔（分钟），与健康检查解耦",
+    )
 
     # ── 报告 ─────────────────────────────────────────────
     report_token_ttl_days: int = Field(default=7, description="报告临时 Token 有效期")

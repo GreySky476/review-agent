@@ -12,6 +12,9 @@ export interface Project {
   recent_review_time: string | null
   pr_count: number
   review_count: number
+  latest_score: number | null
+  status: 'active' | 'inactive' | 'dormant'
+  active_days: number | null
 }
 
 export interface ProjectCreate {

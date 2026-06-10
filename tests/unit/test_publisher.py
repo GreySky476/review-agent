@@ -1,6 +1,5 @@
 """Tests for publisher service."""
 
-from uuid import UUID
 
 from review_agent.service.dimensions.base import DimensionFinding
 from review_agent.service.publisher import Publisher
@@ -98,3 +97,44 @@ class TestPublisherReport:
         summary = p.generate_summary(findings, 92)
         assert "Test Bug" in summary
         assert "92" in summary
+
+    def test_summary_sorted_by_severity(self) -> None:
+        """Findings in summary should be sorted by severity then category priority."""
+        p = Publisher()
+        findings = [
+            _finding(
+                title="Info Style",
+                severity=FindingSeverity.INFO,
+                category=FindingCategory.STYLE,
+            ),
+            _finding(
+                title="Critical Bug",
+                severity=FindingSeverity.CRITICAL,
+                category=FindingCategory.BUG,
+            ),
+            _finding(
+                title="Warning Security",
+                severity=FindingSeverity.WARNING,
+                category=FindingCategory.SECURITY,
+            ),
+            _finding(
+                title="Warning Bug",
+                severity=FindingSeverity.WARNING,
+                category=FindingCategory.BUG,
+            ),
+        ]
+        summary = p.generate_summary(findings, 70)
+
+        # 按出现顺序提取标题
+        lines = summary.split("\n")
+        table_lines = [ln for ln in lines if ln.startswith("|") and "**" in ln]
+        titles_in_order = []
+        for line in table_lines:
+            cells = line.split("|")
+            if len(cells) >= 5:
+                titles_in_order.append(cells[4].strip())
+
+        assert titles_in_order[0] == "Critical Bug"  # CRITICAL BUG
+        assert titles_in_order[1] == "Warning Bug"  # WARNING BUG (before WARNING SECURITY)
+        assert titles_in_order[2] == "Warning Security"  # WARNING SECURITY
+        assert titles_in_order[3] == "Info Style"  # INFO STYLE

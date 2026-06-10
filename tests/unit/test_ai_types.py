@@ -1,6 +1,6 @@
 """Tests for AI provider types."""
 
-from review_agent.service.ai.types import AIMessage, AICompletionRequest, AICompletionResponse
+from review_agent.service.ai.types import AICompletionRequest, AICompletionResponse, AIMessage
 
 
 class TestAIMessage:

@@ -5,6 +5,7 @@ import { Skeleton, ErrorState, Button } from '@/components/ui/shared'
 import { FindingCard } from '@/components/reviews/finding-card'
 import { FileTree } from '@/components/reviews/file-tree'
 import { CommentSection } from '@/components/reviews/comment-section'
+import { api } from '@/lib/api-client'
 import { cn } from '@/lib/utils'
 
 export function ReviewDetailPage() {
@@ -41,11 +42,21 @@ export function ReviewDetailPage() {
     ? findings.filter((f: any) => f.file_path === selectedFile)
     : findings
 
-  const handleFeedback = (action: string) => {
+  const handleFeedback = async (findingId: string, action: string) => {
     if (action === 'comment') {
       setShowComments(true)
+      return
     }
-    // TODO: actual API call for accept/invalid
+    try {
+      const reviewId = data?.reviews?.[0]?.id
+      if (!reviewId) return
+      await api.post(
+        `/reviews/${reviewId}/findings/${findingId}/feedback`,
+        { action },
+      )
+    } catch {
+      // silently fail — feedback is non-critical
+    }
   }
 
   if (error) {
@@ -135,7 +146,7 @@ export function ReviewDetailPage() {
                 finding={f}
                 selected={activeFindingId === f.id}
                 onSelect={() => setActiveFindingId(f.id === activeFindingId ? null : f.id)}
-                onFeedback={handleFeedback}
+                onFeedback={(action) => handleFeedback(f.id, action)}
               />
             ))
           )}

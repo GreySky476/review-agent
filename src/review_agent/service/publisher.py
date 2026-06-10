@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from review_agent.config.settings import get_settings
 from review_agent.service.dimensions.base import DimensionFinding
-from review_agent.types.enums import FindingSeverity
+from review_agent.types.enums import FindingCategory, FindingSeverity
 
 
 class Publisher:
@@ -19,9 +19,7 @@ class Publisher:
     def __init__(self) -> None:
         self._settings = get_settings()
 
-    def aggregate(
-        self, findings: list[DimensionFinding]
-    ) -> tuple[list[DimensionFinding], int]:
+    def aggregate(self, findings: list[DimensionFinding]) -> tuple[list[DimensionFinding], int]:
         """聚合和去重 Finding。
 
         按 (file_path, title) 去重，保留严重性最高的。
@@ -85,15 +83,16 @@ class Publisher:
             是否需要生成详细报告。
         """
         serious_count = sum(
-            1
-            for f in findings
-            if f.severity in (FindingSeverity.CRITICAL, FindingSeverity.WARNING)
+            1 for f in findings if f.severity in (FindingSeverity.CRITICAL, FindingSeverity.WARNING)
         )
         threshold = int(self._settings.verbose_report_threshold)
         return serious_count > threshold
 
     def generate_summary(self, findings: list[DimensionFinding], score: int) -> str:
         """生成 Markdown 格式的评审摘要。
+
+        Findings 按重要性排序输出：先按严重性降序（critical→warning→info），
+        同一严重性内按类别优先级降序（bug→security→performance→...）。
 
         Args:
             findings: 去重后的 Finding 列表。
@@ -131,29 +130,51 @@ class Publisher:
         lines.append(f"| 🔵 Info | {info} |")
         lines.append("")
 
-        # 按严重性/类别分组
-        categories: dict[str, list[DimensionFinding]] = {}
-        for f in findings:
-            cat = f.category.value
-            if cat not in categories:
-                categories[cat] = []
-            categories[cat].append(f)
+        # 排序：严重性降序 + 类别优先级降序
+        severity_order = {
+            FindingSeverity.CRITICAL: 0,
+            FindingSeverity.WARNING: 1,
+            FindingSeverity.INFO: 2,
+        }
+        category_priority = {
+            FindingCategory.BUG: 0,
+            FindingCategory.SECURITY: 1,
+            FindingCategory.PERFORMANCE: 2,
+            FindingCategory.STRUCTURE: 3,
+            FindingCategory.STYLE: 4,
+            FindingCategory.DEPENDENCY: 5,
+        }
+
+        sorted_findings = sorted(
+            findings,
+            key=lambda f: (
+                severity_order.get(f.severity, 99),
+                category_priority.get(f.category, 99),
+            ),
+        )
+
+        # Markdown 表格输出（按重要性排列）
+        severity_icons = {
+            FindingSeverity.CRITICAL: "🔴",
+            FindingSeverity.WARNING: "🟡",
+            FindingSeverity.INFO: "🔵",
+        }
 
         lines.append("### 问题详情\n")
-        for cat, cat_findings in categories.items():
-            lines.append(f"**{cat.upper()}**\n")
-            for f in cat_findings:
-                severity_icon = {
-                    FindingSeverity.CRITICAL: "🔴",
-                    FindingSeverity.WARNING: "🟡",
-                    FindingSeverity.INFO: "🔵",
-                }.get(f.severity, "⚪")
-                location = f"`{f.file_path}`"
-                if f.line_start:
-                    location += f":{f.line_start}"
-                lines.append(f"- {severity_icon} **{f.title}** ({location})")
-                lines.append(f"  - {f.description}")
-                lines.append(f"  - 💡 {f.suggestion}")
-                lines.append("")
+        lines.append("| 严重性 | 类别 | 位置 | 问题 | 建议 |")
+        lines.append("|--------|------|------|------|------|")
+        for f in sorted_findings:
+            icon = severity_icons.get(f.severity, "⚪")
+            severity_label = f.severity.value.upper()
+            location = f"`{f.file_path}`"
+            if f.line_start:
+                location += f":{f.line_start}"
+            # 转义 Markdown 表格中的管道符
+            title = f.title.replace("|", "\\|")
+            suggestion = f.suggestion.replace("|", "\\|").replace("\n", " ")
+            lines.append(
+                f"| {icon} **{severity_label}** | {f.category.value} |"
+                f" {location} | {title} | {suggestion} |"
+            )
 
         return "\n".join(lines)

@@ -16,7 +16,7 @@ _engine = create_async_engine(
     echo=False,
 )
 
-_async_session_factory = async_sessionmaker(
+async_session_factory = async_sessionmaker(
     _engine,
     class_=AsyncSession,
     expire_on_commit=False,
@@ -25,7 +25,7 @@ _async_session_factory = async_sessionmaker(
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI 依赖：提供数据库会话。"""
-    async with _async_session_factory() as session:
+    async with async_session_factory() as session:
         try:
             yield session
             await session.commit()

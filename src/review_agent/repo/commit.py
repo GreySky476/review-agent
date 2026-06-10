@@ -37,10 +37,15 @@ class CommitRepo(BaseRepository[CommitModel]):  # type: ignore[misc]
         return list(result.scalars().all())
 
     async def get_by_sha(self, project_id: str, sha: str) -> CommitModel | None:
-        """按 SHA 查询提交。"""
-        stmt = select(CommitModel).where(
-            CommitModel.project_id == project_id,
-            CommitModel.sha == sha,
+        """按 SHA 查询提交（同 SHA 多行时取最新一条）。"""
+        stmt = (
+            select(CommitModel)
+            .where(
+                CommitModel.project_id == project_id,
+                CommitModel.sha == sha,
+            )
+            .order_by(CommitModel.create_time.desc())
+            .limit(1)
         )
         result = await self._db.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.scalars().first()

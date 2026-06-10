@@ -19,12 +19,12 @@ interface BadgeProps {
 }
 
 const badgeVariants: Record<string, string> = {
-  default: 'bg-gray-500/10 text-gray-400 border-gray-500/30',
-  success: 'bg-green-500/10 text-green-500 border-green-500/30',
-  warning: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/30',
-  error: 'bg-red-500/10 text-red-500 border-red-500/30',
-  info: 'bg-blue-500/10 text-blue-500 border-blue-500/30',
-  purple: 'bg-purple-500/10 text-purple-500 border-purple-500/30',
+  default: 'bg-stone-100 text-stone-600 border-stone-200',
+  success: 'bg-lime-100 text-lime-700 border-lime-200',
+  warning: 'bg-amber-100 text-amber-700 border-amber-200',
+  error: 'bg-red-100 text-red-700 border-red-200',
+  info: 'bg-sky-100 text-sky-700 border-sky-200',
+  purple: 'bg-purple-100 text-purple-700 border-purple-200',
 }
 
 export function Badge({ variant = 'default', children, className }: BadgeProps) {

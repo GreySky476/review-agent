@@ -13,7 +13,7 @@ from review_agent.config.database import get_session
 from review_agent.repo.project import ProjectRepo
 from review_agent.repo.quality_snapshot import QualitySnapshotRepo
 from review_agent.types.models import DashboardStats
-from review_agent.types.orm import ReviewErrorLog, ReviewModel
+from review_agent.types.orm import FindingModel, ReviewErrorLog, ReviewModel
 
 router = APIRouter(tags=["dashboard"])
 
@@ -52,22 +52,22 @@ async def dashboard_stats(
     )
     pending_errors = pending_result.scalar() or 0
 
-    # Finding distribution by category
+    # Finding distribution by category (直接从 FindingModel 聚合)
     find_dist_result = await db.execute(
-        select(ReviewModel.findings_count)
-        .where(
-            ReviewModel.is_deleted.is_(False),
-        )
+        select(FindingModel.category, func.count(FindingModel.id)).where(
+            FindingModel.is_deleted.is_(False),
+        ).group_by(FindingModel.category)
     )
-    all_findings_counts = find_dist_result.scalars().all()
-    total_findings = sum(all_findings_counts)
+    finding_distribution: dict[str, int] = {}
+    for row in find_dist_result.all():
+        finding_distribution[row[0]] = row[1]
 
     return DashboardStats(
         total_projects=total_projects,
         total_reviews_today=total_reviews_today,
         average_score=round(float(avg_score), 1),
         pending_errors=pending_errors,
-        finding_distribution={"total": total_findings},
+        finding_distribution=finding_distribution,
     )
 
 

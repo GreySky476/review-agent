@@ -11,7 +11,17 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from review_agent.types.enums import (
@@ -62,16 +72,20 @@ class ProjectModel(Base, TimestampMixin, SoftDeleteMixin):
 
     __tablename__ = "projects"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    platform: Mapped[Platform] = mapped_column(
-        String(32), nullable=False
-    )
+    platform: Mapped[Platform] = mapped_column(String(32), nullable=False)
     repo_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    default_branch: Mapped[str] = mapped_column(String(255), default="main", nullable=False)
+    owner_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     webhook_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
     webhook_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    settings: Mapped[str] = mapped_column(Text, default="{}", nullable=False)  # JSON
 
     # relationships
     reviews: Mapped[list[ReviewModel]] = relationship(
@@ -87,13 +101,9 @@ class ReviewModel(Base, TimestampMixin, SoftDeleteMixin):
 
     __tablename__ = "reviews"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
-    project_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("projects.id"), nullable=False
-    )
-    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), nullable=False)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pr_title: Mapped[str] = mapped_column(String(512), default="", nullable=False)
     head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[ReviewStatus] = mapped_column(
@@ -103,11 +113,14 @@ class ReviewModel(Base, TimestampMixin, SoftDeleteMixin):
     findings_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     report_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    trigger_type: Mapped[str] = mapped_column(String(32), default="manual", nullable=False)
+    author: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    files_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    commits_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # relationships
-    project: Mapped[ProjectModel] = relationship(
-        "ProjectModel", back_populates="reviews"
-    )
+    project: Mapped[ProjectModel] = relationship("ProjectModel", back_populates="reviews")
     findings: Mapped[list[FindingModel]] = relationship(
         "FindingModel", back_populates="review", cascade="all, delete-orphan"
     )
@@ -121,31 +134,25 @@ class FindingModel(Base, TimestampMixin, SoftDeleteMixin):
 
     __tablename__ = "findings"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
-    review_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("reviews.id"), nullable=False
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    review_id: Mapped[str] = mapped_column(String(36), ForeignKey("reviews.id"), nullable=False)
     file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
     line_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    category: Mapped[FindingCategory] = mapped_column(
-        String(32), nullable=False
-    )
-    severity: Mapped[FindingSeverity] = mapped_column(
-        String(32), nullable=False
-    )
+    category: Mapped[FindingCategory] = mapped_column(String(32), nullable=False)
+    severity: Mapped[FindingSeverity] = mapped_column(String(32), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     suggestion: Mapped[str] = mapped_column(Text, nullable=False)
     rule_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    detected_by: Mapped[str] = mapped_column(String(32), default="ai", nullable=False)
     is_valid: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_fixed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    fixed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fixed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # relationships
-    review: Mapped[ReviewModel] = relationship(
-        "ReviewModel", back_populates="findings"
-    )
+    review: Mapped[ReviewModel] = relationship("ReviewModel", back_populates="findings")
 
 
 # ── Rule ─────────────────────────────────────────────────
@@ -156,17 +163,11 @@ class RuleModel(Base, TimestampMixin, SoftDeleteMixin):
 
     __tablename__ = "rules"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    category: Mapped[FindingCategory] = mapped_column(
-        String(32), nullable=False
-    )
-    severity: Mapped[FindingSeverity] = mapped_column(
-        String(32), nullable=False
-    )
+    category: Mapped[FindingCategory] = mapped_column(String(32), nullable=False)
+    severity: Mapped[FindingSeverity] = mapped_column(String(32), nullable=False)
     languages: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     tags: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
@@ -181,15 +182,16 @@ class UserModel(Base, TimestampMixin, SoftDeleteMixin):
 
     __tablename__ = "users"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     username: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    role: Mapped[UserRole] = mapped_column(
-        String(32), default=UserRole.VIEWER, nullable=False
-    )
+    password_hash: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    avatar_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    role: Mapped[UserRole] = mapped_column(String(32), default=UserRole.VIEWER, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    team_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("teams.id"), nullable=True)
 
 
 # ── WebhookEvent ─────────────────────────────────────────
@@ -200,22 +202,17 @@ class WebhookEventModel(Base, TimestampMixin):
 
     __tablename__ = "webhook_events"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
-    project_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("projects.id"), nullable=False
-    )
-    platform: Mapped[Platform] = mapped_column(
-        String(32), nullable=False
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), nullable=False)
+    platform: Mapped[Platform] = mapped_column(String(32), nullable=False)
     event_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    action: Mapped[EventAction] = mapped_column(
-        String(32), nullable=False
-    )
+    action: Mapped[EventAction] = mapped_column(String(32), nullable=False)
     pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    repo_full_name: Mapped[str] = mapped_column(String(512), default="", nullable=False)
     raw_payload: Mapped[str] = mapped_column(Text, nullable=False)
     is_processed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    response_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 # ── PullRequest ────────────────────────────────────────────
@@ -225,10 +222,9 @@ class PullRequestModel(Base, TimestampMixin):
     """PR（Pull Request / Merge Request）跟踪记录。"""
 
     __tablename__ = "pull_requests"
+    __table_args__ = (UniqueConstraint("project_id", "pr_number", name="uq_pr_project_number"),)
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     project_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("projects.id"), nullable=False, index=True
     )
@@ -241,9 +237,7 @@ class PullRequestModel(Base, TimestampMixin):
     merge_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_merged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     merged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    platform: Mapped[Platform] = mapped_column(
-        String(32), nullable=False
-    )
+    platform: Mapped[Platform] = mapped_column(String(32), nullable=False)
 
 
 # ── Commit ─────────────────────────────────────────────────
@@ -253,10 +247,9 @@ class CommitModel(Base, TimestampMixin):
     """提交记录（含纯分支提交）。"""
 
     __tablename__ = "commits"
+    __table_args__ = (UniqueConstraint("project_id", "sha", name="uq_commit_project_sha"),)
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     project_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("projects.id"), nullable=False, index=True
     )
@@ -266,6 +259,9 @@ class CommitModel(Base, TimestampMixin):
     branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_reviewed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    additions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    deletions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    files_changed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 # ── Comment ────────────────────────────────────────────────
@@ -276,9 +272,7 @@ class CommentModel(Base, TimestampMixin):
 
     __tablename__ = "comments"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     review_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("reviews.id"), nullable=False, index=True
     )
@@ -288,6 +282,9 @@ class CommentModel(Base, TimestampMixin):
     author: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     action: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    is_resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 # ── ReviewErrorLog ─────────────────────────────────────────
@@ -298,9 +295,7 @@ class ReviewErrorLog(Base, TimestampMixin):
 
     __tablename__ = "review_errors"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     project_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("projects.id"), nullable=True
     )
@@ -322,9 +317,7 @@ class QualitySnapshot(Base, TimestampMixin):
 
     __tablename__ = "quality_snapshots"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     project_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("projects.id"), nullable=False, index=True
     )
@@ -336,3 +329,130 @@ class QualitySnapshot(Base, TimestampMixin):
     critical_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     warning_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     info_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+# ── PlatformHealth ────────────────────────────────────────────
+class PlatformHealthModel(Base, TimestampMixin):
+    __tablename__ = "platform_health"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    platform: Mapped[Platform] = mapped_column(String(32), unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ── Team ────────────────────────────────────────────────────────
+
+
+class TeamModel(Base, TimestampMixin, SoftDeleteMixin):
+    """团队/组织分组。"""
+
+    __tablename__ = "teams"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True
+    )
+
+    # relationships
+    members: Mapped[list[TeamMemberModel]] = relationship(
+        "TeamMemberModel", back_populates="team", cascade="all, delete-orphan"
+    )
+
+
+class TeamMemberModel(Base, TimestampMixin):
+    """团队成员关系。"""
+
+    __tablename__ = "team_members"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    team_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("teams.id"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(32), default="member", nullable=False)
+
+    # relationships
+    team: Mapped[TeamModel] = relationship("TeamModel", back_populates="members")
+
+
+# ── AuditLog ────────────────────────────────────────────────────
+
+
+class AuditLogModel(Base, TimestampMixin):
+    """操作审计日志。"""
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    actor_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True, index=True
+    )
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    detail: Mapped[str] = mapped_column(Text, default="{}", nullable=False)  # JSON
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+# ── UserSession ────────────────────────────────────────────────
+
+
+class UserSessionModel(Base, TimestampMixin):
+    """用户登录会话（JWT 管理）。"""
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    is_revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+# ── Notification ────────────────────────────────────────────────
+
+
+class NotificationRuleModel(Base, TimestampMixin, SoftDeleteMixin):
+    """通知规则配置。"""
+
+    __tablename__ = "notification_rules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.id"), nullable=True
+    )
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    channel: Mapped[str] = mapped_column(String(32), nullable=False)
+    config: Mapped[str] = mapped_column(Text, default="{}", nullable=False)  # JSON
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class NotificationLogModel(Base, TimestampMixin):
+    """通知发送记录。"""
+
+    __tablename__ = "notification_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    rule_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("notification_rules.id"), nullable=True
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    recipient: Mapped[str] = mapped_column(String(255), nullable=False)
+    channel: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    create_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )

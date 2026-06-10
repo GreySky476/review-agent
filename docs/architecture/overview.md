@@ -72,6 +72,7 @@
 | ORM | SQLAlchemy 2.0 (async) + Alembic | 数据库操作与迁移 |
 | Git 平台 | PyGithub | GitHub API 封装 |
 | AI 调用 | httpx → DeepSeek / OpenAI API | 代码评审大模型调用 |
+| AI 编排 | LangGraph (已集成) | 有状态、可观测的评审流水线，节点：`service/review_graph/` |
 | 代码解析 | tree-sitter (规划中) | AST 分析与指标提取 |
 | 配置管理 | Pydantic Settings | 环境变量加载与验证 |
 | 日志与追踪 | OpenTelemetry | 全链路追踪，结构化 JSON 日志 |
@@ -191,7 +192,31 @@ publish_commit_summary() → GitHub Commit 评论
 | 并发策略 | 待实现 | 文件级并发 (Semaphore=3) |
 | AI 调用 | 待实现 | 按 chunk token 数分流 |
 
-### 4.3 代码分块策略
+### 4.3 平台心跳检测
+
+系统每 1 分钟自动检测外部平台（GitHub/Gitee）的 API 连通性：
+
+```text
+FastAPI 启动 → lifespan
+  → asyncio background task (每1分钟)
+    → 创建 DB session
+    → httpx GET api.github.com/user (with token)
+    → httpx GET gitee.com/api/v5/user (with token)
+    → PlatformHealthRepo.upsert() → platform_health 表
+```
+
+管理后台通过 `GET /health/platforms` 获取最新状态，含延迟和错误信息。
+表数据实时反映平台可用性，展示在仪表盘供及时发现连接故障。
+
+### 4.4 Webhook 连通性验证
+
+| 方式 | 端点 | 说明 |
+|------|------|------|
+| GitHub Ping | `POST /api/webhook/github` (自动) | GitHub 创建/重发 webhook 时自动触发 |
+| Gitee Test Hook | `POST /api/webhook/gitee` (自动) | Gitee 测试事件 |
+| 手动验证 | `GET /api/webhook/health` | curl/浏览器直接访问验证服务在线 |
+
+### 4.5 代码分块策略
 
 | 分类 | Token 范围 | 处理方式 |
 |------|-----------|---------|

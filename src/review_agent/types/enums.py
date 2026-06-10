@@ -14,6 +14,9 @@ class Platform(StrEnum):
     GITHUB = "github"
     GITLAB = "gitlab"
     GITEE = "gitee"
+    GITHUB_ENTERPRISE = "github_enterprise"
+    GITLAB_SELF_HOSTED = "gitlab_self_hosted"
+    GITEA_SELF_HOSTED = "gitea_self_hosted"
 
 
 class FindingSeverity(StrEnum):

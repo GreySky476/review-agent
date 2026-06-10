@@ -5,6 +5,8 @@ import { useUIStore } from '@/stores/ui-store'
 const navItems = [
   { to: '/dashboard', label: '仪表盘', icon: '◉' },
   { to: '/projects', label: '项目', icon: '◈' },
+  { to: '/reviews', label: '评审历史', icon: '◎' },
+  { to: '/rules', label: '评审规则', icon: '◇' },
   { to: '/errors', label: '异常监控', icon: '▲' },
 ]
 
@@ -45,8 +47,8 @@ export function Sidebar() {
               cn(
                 'flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors',
                 isActive
-                  ? 'bg-primary/10 text-primary'
-                  : 'text-muted hover:bg-surface-hover hover:text-foreground',
+                  ? 'bg-amber-50 text-amber-700'
+                  : 'text-muted hover:bg-stone-50 hover:text-foreground',
                 collapsed && 'justify-center px-2',
               )
             }

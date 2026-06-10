@@ -74,6 +74,12 @@ docker compose up -d
 # 仅启动后端依赖（开发时本地运行 API）
 docker compose up -d postgres redis
 
+# 执行数据库迁移
+docker compose exec api alembic upgrade head
+
+# 或本地手动迁移
+uv run alembic upgrade head
+
 # 查看 API 日志
 docker compose logs -f api
 
@@ -96,6 +102,7 @@ REVIEW_AGENT_LOG_LEVEL=INFO
 # 可选调优
 REVIEW_AGENT_REVIEW_MAX_CONCURRENCY=3       # 文件级并发上限
 REVIEW_AGENT_REVIEW_SKIP_EXTENSIONS=.md,.rst,.txt
+REVIEW_AGENT_HEALTH_CHECK_INTERVAL_MINUTES=1  # 平台连通性心跳检测间隔（默认1分钟，0禁用）
 ```
 
 ---

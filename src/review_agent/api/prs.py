@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from review_agent.config.database import get_session
 from review_agent.repo.pull_request import PullRequestRepo
 from review_agent.repo.review import ReviewRepo
+from review_agent.types.orm import FindingModel
 
 router = APIRouter(tags=["pull-requests"])
 
@@ -49,7 +51,7 @@ async def list_pull_requests(
                 "author": pr.author,
                 "state": pr.state,
                 "is_merged": pr.is_merged,
-                "review_status": review.status.value if review else None,
+                "review_status": review.status if review else None,
                 "review_score": review.score if review else None,
                 "findings_count": review.findings_count if review else 0,
             }
@@ -83,6 +85,32 @@ async def get_pull_request_detail(
 
     review = await review_repo.get_by_project_pr(project_id, pr_number)
 
+    # 查询真实 Findings
+    findings: list[dict[str, Any]] = []
+    if review:
+        finding_rows = await db.execute(
+            select(FindingModel).where(
+                FindingModel.review_id == review.id,
+                FindingModel.is_deleted.is_(False),
+            )
+        )
+        for f in finding_rows.scalars().all():
+            findings.append(
+                {
+                    "id": f.id,
+                    "file_path": f.file_path,
+                    "line_start": f.line_start,
+                    "line_end": f.line_end,
+                    "category": f.category,
+                    "severity": f.severity,
+                    "title": f.title,
+                    "description": f.description,
+                    "suggestion": f.suggestion,
+                    "rule_id": f.rule_id,
+                    "is_valid": f.is_valid,
+                }
+            )
+
     return {
         "pull_request": {
             "pr_number": pr.pr_number,
@@ -99,7 +127,7 @@ async def get_pull_request_detail(
         "reviews": [
             {
                 "id": review.id,
-                "status": review.status.value,
+                "status": review.status,
                 "score": review.score,
                 "findings_count": review.findings_count,
                 "create_time": review.create_time.isoformat() if review.create_time else None,
@@ -107,5 +135,5 @@ async def get_pull_request_detail(
         ]
         if review
         else [],
-        "findings": [],
+        "findings": findings,
     }

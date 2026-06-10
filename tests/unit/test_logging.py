@@ -2,7 +2,6 @@
 
 import json
 import logging
-from io import StringIO
 
 from review_agent.config.logging import (
     StructuredJSONFormatter,

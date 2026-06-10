@@ -45,9 +45,9 @@ export function FileTree({ files, selectedFile, onSelect }: FileTreeProps) {
             className={cn(
               'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors',
               selectedFile === fullPath
-                ? 'bg-primary/10 text-primary'
+                ? 'bg-amber-50 text-amber-700'
                 : isLeaf
-                  ? 'text-muted hover:bg-surface-hover hover:text-foreground'
+                  ? 'text-muted hover:bg-stone-50 hover:text-foreground'
                   : 'text-muted-more',
               !isLeaf && 'cursor-default',
             )}

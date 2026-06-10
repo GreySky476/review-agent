@@ -232,6 +232,7 @@ class TestQualitySnapshotModel:
     def test_quality_snapshot_defaults(self) -> None:
         """QualitySnapshot 应使用默认值。"""
         from datetime import date
+
         from review_agent.types.models import QualitySnapshot
         qs = QualitySnapshot(
             project_id=UUID(int=1),

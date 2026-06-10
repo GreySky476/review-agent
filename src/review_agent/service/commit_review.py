@@ -35,6 +35,7 @@ from review_agent.service.dimensions.base import (
 from review_agent.service.dimensions.structure import review_structure
 from review_agent.service.git.base import GitProvider, PRFile
 from review_agent.service.publisher import Publisher
+from review_agent.service.standards import load_standards
 from review_agent.types.enums import ChunkPath, FindingCategory, FindingSeverity
 
 logger = logging.getLogger(__name__)
@@ -77,18 +78,20 @@ class CommitReviewService:
         sha: str,
         files: list[PRFile],
     ) -> CommitReviewResult:
-        """编排一次 commit 的完整评审（文件级并发）。
+        """编排一次 commit 的完整评审（文件级并发）。"""
+        logger.info(
+            "Starting commit review: %s@%s total_files=%d concurrency=%d",
+            repo_name,
+            sha,
+            len(files),
+            self._settings.review_max_concurrency,
+        )
 
-        Args:
-            repo_name: 仓库全名（如 "owner/repo"）。
-            sha: commit SHA。
-            files: 该 commit 变更的文件列表。
-
-        Returns:
-            评审结果（findings + 分数 + 摘要 markdown）。
-        """
         # 筛选出需要评审的文件
         target_files = [f for f in files if not self._should_skip_file(f.filename)]
+        skipped = len(files) - len(target_files)
+        if skipped:
+            logger.info("Skipped %d files by extension for %s@%s", skipped, repo_name, sha)
 
         # 文件级并发：每个文件作为一个独立 task，由 semaphore 控制并发上限
         async def _review_with_semaphore(pr_file: PRFile) -> list[DimensionFinding]:
@@ -108,6 +111,15 @@ class CommitReviewService:
 
         # 聚合去重 + 打分
         deduped, score = self._publisher.aggregate(all_findings)
+
+        logger.info(
+            "Review summary for %s@%s: %d raw findings → %d deduped, score=%d",
+            repo_name,
+            sha,
+            len(all_findings),
+            len(deduped),
+            score,
+        )
 
         # 生成摘要
         summary = self._publisher.generate_summary(deduped, score)
@@ -132,6 +144,7 @@ class CommitReviewService:
         """评审单个文件。"""
         # 已删除的文件不需要评审
         if pr_file.status == "removed":
+            logger.debug("Skipping removed file: %s", pr_file.filename)
             return []
 
         source_code = await self._git.get_file_content(repo_name, pr_file.filename, sha)
@@ -140,11 +153,29 @@ class CommitReviewService:
             return []
 
         chunks = await chunk_file(pr_file.filename, source_code)
+
+        # 统计 chunk 路径分布
+        normal = sum(1 for c in chunks if c.path == ChunkPath.DETAILED_REVIEW)
+        oversized = sum(1 for c in chunks if c.path == ChunkPath.STRUCTURAL_REVIEW)
+        boundary = len(chunks) - normal - oversized
+
+        logger.info(
+            "Reviewing: %s (%d chunks: %d normal, %d oversized, %d boundary)",
+            pr_file.filename,
+            len(chunks),
+            normal,
+            oversized,
+            boundary,
+        )
+
         findings: list[DimensionFinding] = []
 
         for chunk in chunks:
             chunk_findings = await self._review_chunk(chunk, pr_file)
             findings.extend(chunk_findings)
+
+        if findings:
+            logger.info("  → %s: %d findings", pr_file.filename, len(findings))
 
         return findings
 
@@ -166,15 +197,31 @@ class CommitReviewService:
         # Step 2: 根据 chunk 大小决定是否执行 AI/结构评审
         if chunk.path == ChunkPath.DETAILED_REVIEW:
             # Normal chunk (≤1500 tokens) → AI + 规则
+            logger.debug(
+                "Chunk %s/%s: detailed AI review path",
+                chunk.file_path,
+                chunk.function_name or "?",
+            )
             if self._ai is not None:
+                logger.info("  AI review: %s/%s ...", chunk.file_path, chunk.function_name or "?")
                 ai_findings = await self._ai_review_chunk(chunk, pr_file)
                 findings.extend(ai_findings)
         elif chunk.path == ChunkPath.STRUCTURAL_REVIEW:
             # 超大 chunk (>2000 tokens) → 结构评审 + 规则，跳过 AI
+            logger.debug(
+                "Chunk %s/%s: structural review path (oversized)",
+                chunk.file_path,
+                chunk.function_name or "?",
+            )
             structure_findings = await review_structure(chunk)
             findings.extend(structure_findings)
         else:
             # 边界 chunk (1500-2000 tokens) → 规则 + 结构评审，跳过 AI
+            logger.debug(
+                "Chunk %s/%s: boundary review path",
+                chunk.file_path,
+                chunk.function_name or "?",
+            )
             structure_findings = await review_structure(chunk)
             findings.extend(structure_findings)
 
@@ -192,22 +239,26 @@ class CommitReviewService:
         if self._ai is None:
             return []
 
-        # 构建 prompt
-        system_prompt = (
-            "你是一位资深代码评审专家。请审查下方的代码变更，"
-            "找出其中的正确性缺陷、安全风险、错误处理遗漏和逻辑错误。\n\n"
+        # 构建 prompt（注入语言特定规范）
+        lang_standards = load_standards(chunk.file_path)
+        system_prompt = ""
+        if lang_standards:
+            system_prompt += f"## 语言特定代码评审规范\n\n{lang_standards}\n\n"
+        system_prompt += (
+            "你是一位资深代码评审专家。请严格参照上述规范审查下方的代码变更，"
+            "找出其中的违规项、正确性缺陷、安全风险、错误处理遗漏和逻辑错误。\n\n"
             "以 JSON 数组格式返回结果，不要包含其他内容：\n"
-            '```json\n'
-            '[\n'
-            '  {\n'
+            "```json\n"
+            "[\n"
+            "  {\n"
             '    "severity": "critical|warning|info",\n'
             '    "title": "简短标题",\n'
             '    "description": "问题详细描述",\n'
             '    "suggestion": "修复建议",\n'
             '    "line": <行号或 null>\n'
-            '  }\n'
-            ']\n'
-            '```\n'
+            "  }\n"
+            "]\n"
+            "```\n"
             "如果没有发现问题，返回空数组 []。"
         )
 
@@ -224,13 +275,20 @@ class CommitReviewService:
                 AIMessage(role="user", content=user_prompt),
             ],
             temperature=0.1,
-            max_tokens=2048,
+            max_tokens=self._settings.ai_review_max_tokens,
             timeout_seconds=self._settings.ai_request_timeout,
         )
 
         try:
             response = await self._ai.complete(request)
-            return self._parse_ai_response(response.content, chunk)
+            findings = self._parse_ai_response(response.content, chunk)
+            logger.info(
+                "  AI review done: %s/%s → %d findings",
+                chunk.file_path,
+                chunk.function_name or "?",
+                len(findings),
+            )
+            return findings
         except Exception as exc:
             logger.warning(
                 "AI review failed for %s:%s: %s",
@@ -243,26 +301,53 @@ class CommitReviewService:
     def _parse_ai_response(self, content: str, chunk: CodeChunk) -> list[DimensionFinding]:
         """从 AI 响应中解析 findings。
 
-        支持两种格式：
-        1. 被 ```json ... ``` 包裹的 JSON
-        2. 纯 JSON 数组
+        支持三种格式，按优先级尝试：
+        1. 被 ```json ... ``` markdown 包裹的 JSON
+        2. 从内容中提取第一个 `[...]` 数组（找到第一个 `[` 和最后一个 `]`）
+        3. 直接解析整个内容
         """
-        # 尝试提取 JSON 块
-        json_match = re.search(r"```(?:json)?\s*(\[[\s\S]*?\])\s*```", content)
-        json_str = json_match.group(1) if json_match else content.strip()
+        import contextlib
 
-        # 尝试解析为 JSON
-        try:
-            raw_findings: list[dict[str, Any]] = json.loads(json_str)
-        except json.JSONDecodeError:
-            # 如果内容本身就是一个 JSON 数组（没有 markdown 包裹）
-            try:
+        raw_findings: list[dict[str, Any]] | None = None
+
+        # 尝试 1: markdown 代码块包裹
+        json_match = re.search(r"```(?:json)?\s*\[[\s\S]*?\]\s*```", content)
+        if json_match:
+            block = json_match.group(0)
+            inner = re.search(r"\[[\s\S]*\]", block)
+            if inner:
+                with contextlib.suppress(json.JSONDecodeError):
+                    raw_findings = json.loads(inner.group(0))
+
+        # 尝试 2: 提取第一个 [ 和最后一个 ]
+        if raw_findings is None:
+            start = content.find("[")
+            end = content.rfind("]")
+            if start != -1 and end > start:
+                with contextlib.suppress(json.JSONDecodeError):
+                    raw_findings = json.loads(content[start : end + 1])
+
+        # 尝试 3: 直接解析全文
+        if raw_findings is None:
+            with contextlib.suppress(json.JSONDecodeError):
                 raw_findings = json.loads(content.strip())
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse AI response as JSON: %.100s", content)
-                return []
+
+        if raw_findings is None:
+            preview = (content[:300] + "...") if content else "<empty response>"
+            logger.warning(
+                "Failed to parse AI response as JSON for %s: %s",
+                chunk.file_path,
+                preview,
+            )
+            return []
 
         if not isinstance(raw_findings, list):
+            logger.warning(
+                "AI response for %s is not a list (type=%s): %.200s",
+                chunk.file_path,
+                type(raw_findings).__name__,
+                content[:200],
+            )
             return []
 
         findings: list[DimensionFinding] = []

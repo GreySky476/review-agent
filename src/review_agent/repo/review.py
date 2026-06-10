@@ -38,3 +38,17 @@ class ReviewRepo(BaseRepository[ReviewModel]):  # type: ignore[misc]
         )
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_latest(self, project_id: str) -> ReviewModel | None:
+        """查询项目的最新评审记录。"""
+        stmt = (
+            select(ReviewModel)
+            .where(
+                ReviewModel.project_id == project_id,
+                ReviewModel.is_deleted.is_(False),
+            )
+            .order_by(ReviewModel.create_time.desc())
+            .limit(1)
+        )
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()

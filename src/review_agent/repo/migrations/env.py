@@ -12,11 +12,20 @@ from review_agent.config.settings import get_settings
 
 # Import all ORM models so they register on Base.metadata
 from review_agent.types.orm import (  # noqa: F401
+    AuditLogModel,
     Base,
+    CommentModel,
+    CommitModel,
     FindingModel,
+    PlatformHealthModel,
     ProjectModel,
+    PullRequestModel,
+    QualitySnapshot,
+    ReviewErrorLog,
     ReviewModel,
     RuleModel,
+    TeamMemberModel,
+    TeamModel,
     UserModel,
     WebhookEventModel,
 )

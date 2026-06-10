@@ -35,6 +35,10 @@
       "name": "design",
       "description": "创建架构决策记录 (ADR) 或功能设计文档",
       "prompt": "你正在编写架构决策记录 (ADR) 或功能设计文档。\n\nADR 模板（docs/adr/YYYY-MM-DD-title.md）：\n```markdown\n# ADR-NNN: 决策标题\n\n## 状态\n[提议中 | 已接受 | 已弃用 | 已取代]\n\n## 背景\n为什么要做这个决策？上下文是什么？\n\n## 选项\n列出并简要评估每个候选方案。\n\n## 决策\n选择了哪个方案？为什么？\n\n## 后果\n这个决策带来的正面和负面影响。\n\n## 关联\n- 关联 ADR: [链接]\n- 关联 Issue: [链接]\n```\n\n约束：\n- 每个 ADR 独立文件，放入 docs/adr/\n- 文件名格式：YYYY-MM-DD-short-kebab-name.md\n- 编号顺序递增\n- 被取代的 ADR 更新状态为\"已取代\"并链接到新 ADR"
-    }
+    },
+    {
+      "name": "db",
+      "description": "直接操作数据库：查询或修改数据，使用正确的数据库凭据",
+      "prompt": "你正在执行数据库操作。\n\n连接信息：\n- 数据库 URL: `postgresql+asyncpg://review:review@localhost:5432/review_agent`\n- 使用 `uv run python -c \"...\"` 执行（需要 asyncio 封装）\n\n示例模板：\n```python\nimport asyncio\nfrom sqlalchemy import text\nfrom sqlalchemy.ext.asyncio import create_async_engine\n\nasync def main():\n    engine = create_async_engine('postgresql+asyncpg://review:review@localhost:5432/review_agent')\n    async with engine.connect() as conn:\n        # 查询\n        result = await conn.execute(text(\"SELECT * FROM projects LIMIT 5\"))\n        for row in result.all():\n            print(row)\n        # 修改后需要 commit\n        await conn.commit()\n    await engine.dispose()\nasyncio.run(main())\n```\n\n注意：\n- 查询不用 commit，修改（INSERT/UPDATE/DELETE）需要 conn.commit()\n- 使用完成后调用 engine.dispose() 关闭连接\n- 表名和字段名与 ORM 模型定义一致"
   ]
 }

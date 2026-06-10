@@ -1,5 +1,14 @@
 """Tests for foundation module: exceptions and enums."""
 
+from review_agent.types.enums import (
+    ChunkPath,
+    EventAction,
+    FindingCategory,
+    FindingSeverity,
+    Platform,
+    ReviewStatus,
+    UserRole,
+)
 from review_agent.types.exceptions import (
     AIProviderError,
     ConfigError,
@@ -9,15 +18,6 @@ from review_agent.types.exceptions import (
     ReviewAgentError,
     ValidationError,
     WebhookValidationError,
-)
-from review_agent.types.enums import (
-    ChunkPath,
-    EventAction,
-    FindingCategory,
-    FindingSeverity,
-    Platform,
-    ReviewStatus,
-    UserRole,
 )
 
 
@@ -100,7 +100,6 @@ class TestEnums:
 
     def test_all_enums_are_unique(self) -> None:
         """每个枚举类的值应唯一。"""
-        from collections import Counter
 
         for enum_cls in [Platform, FindingSeverity, FindingCategory, ReviewStatus, ChunkPath, EventAction, UserRole]:
             values = [e.value for e in enum_cls]

@@ -45,7 +45,7 @@ export function FindingCard({ finding, selected, onSelect, onFeedback }: Finding
     <div
       className={cn(
         'rounded-lg border transition-colors',
-        selected ? 'border-primary bg-primary/5' : 'border-border bg-surface',
+        selected ? 'border-amber-500 bg-amber-50/40' : 'border-border bg-surface',
         'cursor-pointer',
       )}
       onClick={() => {

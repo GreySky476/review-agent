@@ -73,9 +73,7 @@ class GitProvider(ABC):
         ...
 
     @abstractmethod
-    async def get_file_content(
-        self, repo_name: str, file_path: str, ref: str
-    ) -> str | None:
+    async def get_file_content(self, repo_name: str, file_path: str, ref: str) -> str | None:
         """获取仓库中指定文件的完整内容。
 
         Args:
@@ -102,9 +100,7 @@ class GitProvider(ABC):
         ...
 
     @abstractmethod
-    async def publish_commit_summary(
-        self, repo_name: str, sha: str, summary: str
-    ) -> None:
+    async def publish_commit_summary(self, repo_name: str, sha: str, summary: str) -> None:
         """在提交上发布摘要评论。
 
         Args:
@@ -128,9 +124,7 @@ class GitProvider(ABC):
         ...
 
     @abstractmethod
-    async def publish_summary_comment(
-        self, repo_name: str, pr_number: int, summary: str
-    ) -> None:
+    async def publish_summary_comment(self, repo_name: str, pr_number: int, summary: str) -> None:
         """在 PR 中发布摘要评论。
 
         Args:

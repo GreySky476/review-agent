@@ -1,9 +1,11 @@
 import { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useProject } from '@/hooks/use-projects'
 import { usePullRequests } from '@/hooks/use-reviews'
 import { useCommits, useTriggerCommitReview } from '@/hooks/use-commits'
 import { useQualityTrends } from '@/hooks/use-dashboard'
+import { api } from '@/lib/api-client'
 import {
   Skeleton,
   ErrorState,
@@ -24,12 +26,13 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 
-type TabId = 'prs' | 'commits' | 'quality'
+type TabId = 'prs' | 'commits' | 'quality' | 'webhook'
 
 const tabs: { id: TabId; label: string }[] = [
   { id: 'prs', label: 'PR 列表' },
   { id: 'commits', label: '提交' },
   { id: 'quality', label: '质量趋势' },
+  { id: 'webhook', label: 'Webhook' },
 ]
 
 /* ── Review Status Badge ────────────────────────────────── */
@@ -52,10 +55,97 @@ function PRStateBadge({ state, isMerged }: { state: string; isMerged: boolean })
   return <Badge variant="default">Closed</Badge>
 }
 
+/* ── Webhook Events Tab ──────────────────────────────────── */
+function WebhookEventsTab({ projectId }: { projectId: string }) {
+  const [page, setPage] = useState(1)
+  const { data, isLoading } = useQuery({
+    queryKey: ['webhook-events', projectId, page],
+    queryFn: async () => {
+      const { data } = await api.get(`/projects/${projectId}/webhook-events`, { params: { page } })
+      return data as { items: any[]; total: number; page: number; page_size: number }
+    },
+    enabled: !!projectId,
+    staleTime: 10 * 1000,
+  })
+
+  return (
+    <div className="space-y-4">
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border bg-surface text-left text-muted-more">
+              <th className="px-4 py-3 font-medium">时间</th>
+              <th className="px-4 py-3 font-medium">事件 ID</th>
+              <th className="px-4 py-3 font-medium">动作</th>
+              <th className="px-4 py-3 font-medium">PR</th>
+              <th className="px-4 py-3 font-medium">已处理</th>
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading ? (
+              Array.from({ length: 3 }).map((_, i) => (
+                <tr key={i} className="border-b border-border/50">
+                  {Array.from({ length: 5 }).map((_, j) => (
+                    <td key={j} className="px-4 py-4"><Skeleton className="h-4 w-20" /></td>
+                  ))}
+                </tr>
+              ))
+            ) : !data?.items?.length ? (
+              <tr>
+                <td colSpan={5} className="px-4 py-12">
+                  <EmptyState title="暂无 Webhook 事件" description="接入 Webhook 后事件将自动记录" />
+                </td>
+              </tr>
+            ) : (
+              data.items.map((evt: any) => (
+                <tr key={evt.id} className="border-b border-border/50 text-muted hover:bg-surface-hover/50">
+                  <td className="px-4 py-4 text-xs">
+                    {evt.create_time ? new Date(evt.create_time).toLocaleString('zh-CN') : '-'}
+                  </td>
+                  <td className="px-4 py-4 font-mono text-xs text-foreground">{evt.event_id?.slice(0, 16)}...</td>
+                  <td className="px-4 py-4">
+                    <Badge variant={
+                      evt.action === 'opened' ? 'success' :
+                      evt.action === 'synchronize' ? 'info' :
+                      evt.action === 'closed' ? 'default' : 'warning'
+                    }>
+                      {evt.action}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-4 font-mono text-xs text-primary">#{evt.pr_number}</td>
+                  <td className="px-4 py-4">
+                    <Badge variant={evt.is_processed ? 'success' : 'warning'}>
+                      {evt.is_processed ? '已处理' : '待处理'}
+                    </Badge>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {data && data.total > data.page_size && (
+        <div className="flex items-center justify-between text-sm text-muted">
+          <span>第 {data.page} 页，共 {Math.ceil(data.total / data.page_size)} 页</span>
+          <div className="flex gap-2">
+            <Button variant="secondary" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>上一页</Button>
+            <Button variant="secondary" size="sm" disabled={page * data.page_size >= data.total} onClick={() => setPage((p) => p + 1)}>下一页</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const [activeTab, setActiveTab] = useState<TabId>('prs')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabFromUrl = (searchParams.get('tab') as TabId) || 'prs'
+  const [activeTab, setActiveTab] = useState<TabId>(
+    ['prs', 'commits', 'quality'].includes(tabFromUrl) ? tabFromUrl : 'prs',
+  )
   const [prPage, setPrPage] = useState(1)
 
   const { data: project, isLoading: projectLoading, error: projectError, refetch: refetchProject } = useProject(id!)
@@ -68,8 +158,27 @@ export function ProjectDetailPage() {
     page: commitPage,
   })
   const triggerReview = useTriggerCommitReview(id!)
+  const [triggeredSha, setTriggeredSha] = useState<string | null>(null)
+  const [triggerErrorSha, setTriggerErrorSha] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [webhookTestResult, setWebhookTestResult] = useState<string | null>(null)
+  const queryClient = useQueryClient()
+  const testWebhook = useMutation({
+    mutationFn: async () => {
+      const { data } = await api.post(`/projects/${id}/webhook/test`)
+      return data as { found: boolean; status?: string; error?: string; ping_sent?: boolean }
+    },
+    onSuccess: (result) => {
+      if (result.found) {
+        setWebhookTestResult(`已连接${result.ping_sent ? '（测试 Ping 已发送）' : ''}`)
+        queryClient.invalidateQueries({ queryKey: ['project', id] })
+      } else {
+        setWebhookTestResult(result.error === 'project_not_found' ? '项目不存在' : '未检测到 Webhook 配置')
+      }
+    },
+    onError: () => setWebhookTestResult('连接测试失败'),
+  })
 
   if (projectError) {
     return <ErrorState message="项目加载失败" onRetry={refetchProject} />
@@ -104,7 +213,7 @@ export function ProjectDetailPage() {
             <h1 className="text-2xl font-bold text-foreground">{project.name}</h1>
           </div>
           <Button variant="secondary" size="sm" onClick={() => setShowSettings(true)}>
-            ⚙️ 设置
+            设置
           </Button>
         </div>
         <div className="mt-2 flex items-center gap-4 text-sm text-muted">
@@ -125,7 +234,10 @@ export function ProjectDetailPage() {
         {tabs.map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => {
+              setActiveTab(tab.id)
+              setSearchParams({ tab: tab.id }, { replace: true })
+            }}
             className={cn(
               'px-4 py-3 text-sm font-medium transition-colors',
               activeTab === tab.id
@@ -311,20 +423,30 @@ export function ProjectDetailPage() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          disabled={triggerReview.isPending}
+                          disabled={triggerReview.isPending && triggeredSha !== commit.sha}
                           onClick={async (e) => {
                             e.stopPropagation()
+                            setTriggerErrorSha(null)
                             try {
                               await triggerReview.mutateAsync({
                                 sha: commit.sha,
                                 mentionUser: 'reviewer',
                               })
+                              setTriggeredSha(commit.sha)
+                              setTimeout(() => setTriggeredSha(null), 2000)
                             } catch {
-                              // ignore
+                              setTriggerErrorSha(commit.sha)
+                              setTimeout(() => setTriggerErrorSha(null), 2000)
                             }
                           }}
                         >
-                          {triggerReview.isPending ? '...' : '@ 触发评审'}
+                          {triggeredSha === commit.sha
+                            ? '✓ 已触发'
+                            : triggerErrorSha === commit.sha
+                              ? '✗ 触发失败'
+                              : triggerReview.isPending
+                                ? '...'
+                                : '@ 触发评审'}
                         </Button>
                       </td>
                     </tr>
@@ -397,9 +519,14 @@ export function ProjectDetailPage() {
         </div>
       )}
 
+      {/* Tab Content: Webhook Events */}
+      {activeTab === 'webhook' && (
+        <WebhookEventsTab projectId={id!} />
+      )}
+
       {/* Settings Modal */}
       {showSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="w-full max-w-lg rounded-xl border border-border bg-surface p-6 shadow-lg">
             <h2 className="text-lg font-bold text-foreground">项目设置</h2>
             <p className="mt-1 text-sm text-muted">项目信息和 Webhook 配置</p>
@@ -454,7 +581,7 @@ export function ProjectDetailPage() {
                     className="shrink-0 text-xs text-muted hover:text-foreground transition-colors min-w-[4rem] text-center"
                     title="复制"
                   >
-                    {copied ? '已复制!' : '📋 复制'}
+                    {copied ? '已复制!' : '复制'}
                   </button>
                 </div>
                 <div className="mt-3 space-y-1 text-xs text-muted">
@@ -463,6 +590,20 @@ export function ProjectDetailPage() {
                   <p>• 开发环境使用 ngrok 隧道暴露后端 8000 端口</p>
                   <p>• 在 ngrok 终端查看公网 URL，替换上方地址</p>
                 </div>
+              </div>
+
+              {/* Test Connection */}
+              <div className="flex items-center gap-3">
+                <button onClick={() => { setWebhookTestResult(null); testWebhook.mutate() }}
+                  disabled={testWebhook.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-sm text-foreground hover:bg-surface-hover transition-colors disabled:opacity-50">
+                  {testWebhook.isPending ? '测试中...' : '测试连接'}
+                </button>
+                {webhookTestResult && (
+                  <span className={`text-xs ${webhookTestResult.startsWith('已连接') ? 'text-success' : 'text-warning'}`}>
+                    {webhookTestResult}
+                  </span>
+                )}
               </div>
 
               {/* Sync Notice */}
