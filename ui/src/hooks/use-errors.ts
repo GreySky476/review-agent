@@ -58,3 +58,19 @@ export function useErrorStats(params?: {
     staleTime: 60 * 1000,
   })
 }
+
+export interface ErrorTrendPoint {
+  date: string
+  count: number
+}
+
+export function useErrorTrend(days = 7) {
+  return useQuery<ErrorTrendPoint[]>({
+    queryKey: ['errors', 'trend', days],
+    queryFn: async () => {
+      const { data } = await api.get('/errors/trend', { params: { days } })
+      return data
+    },
+    staleTime: 60 * 1000,
+  })
+}

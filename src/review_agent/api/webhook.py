@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 from typing import Any
@@ -20,6 +21,8 @@ from review_agent.api.webhook_helpers import (
     trigger_pr_review,
 )
 from review_agent.config.database import get_session
+from review_agent.repo.project import ProjectRepo
+from review_agent.service.error_logger import log_error
 from review_agent.types.enums import EventAction, Platform
 
 logger = logging.getLogger(__name__)
@@ -36,7 +39,15 @@ async def github_webhook(
 ) -> dict[str, str]:
     """接收 GitHub Webhook 事件。"""
     raw = await request.body()
-    payload: dict[str, Any] = json.loads(raw)
+    try:
+        payload: dict[str, Any] = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("Invalid JSON payload from GitHub webhook: %s", exc)
+        await log_error(
+            error_type="webhook_parse_failed",
+            error_message=f"GitHub webhook invalid JSON: {exc}",
+        )
+        return {"status": "ignored", "reason": "invalid_json"}
     event_id = x_github_delivery or str(uuid4())
 
     logger.info(
@@ -75,6 +86,17 @@ async def github_webhook(
 
         trigger_actions = {EventAction.OPENED, EventAction.SYNCHRONIZE, EventAction.REOPENED}
         if project_id and parsed_action in trigger_actions:
+            # 检查 PR 目标分支是否匹配 review_branches 设置
+            pr_base_ref = pr_data.get("base", {}).get("ref")
+            project_repo = ProjectRepo(db)
+            allowed = await project_repo.get_review_branches(project_id)
+            if pr_base_ref and not any(fnmatch.fnmatch(pr_base_ref, p) for p in allowed):
+                logger.info(
+                    "Skipped PR review: target_branch='%s' not in review list %s (project=%s)",
+                    pr_base_ref, allowed, project_id,
+                )
+                return {"status": "skipped", "reason": "branch_not_matched"}
+
             pr_head_sha = pr_data.get("head", {}).get("sha")
             await trigger_pr_review(
                 db=db,

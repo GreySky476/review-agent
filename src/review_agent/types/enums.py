@@ -45,6 +45,7 @@ class ReviewStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    COMPLETED_WITH_ERRORS = "completed_with_errors"
 
 
 class ChunkPath(StrEnum):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -9,10 +10,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from review_agent.config.database import get_session
+from review_agent.repo.project import ProjectRepo
 from review_agent.repo.pull_request import PullRequestRepo
 from review_agent.repo.review import ReviewRepo
+from review_agent.service.git.github_provider import GitHubProvider
+from review_agent.service.queue import enqueue_commit_review
+from review_agent.types.enums import ReviewStatus
 from review_agent.types.orm import FindingModel
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["pull-requests"])
 
 
@@ -137,3 +143,113 @@ async def get_pull_request_detail(
         else [],
         "findings": findings,
     }
+
+
+@router.post("/projects/{project_id}/pull-requests/{pr_number}/review", status_code=202)
+async def trigger_pr_review(
+    project_id: str,
+    pr_number: int,
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """手动触发 PR 评审。
+
+    1. 查找项目
+    2. 从 GitHub 获取 PR 最新 head SHA
+    3. 获取变更文件列表
+    4. 创建评审记录并加入队列
+    """
+    logger.info("Manual PR review triggered: project=%s pr=#%d", project_id, pr_number)
+
+    # 1. 查找项目
+    project_repo = ProjectRepo(db)
+    project = await project_repo.get(project_id)
+    if not project:
+        logger.warning("Project not found: %s", project_id)
+        return {"status": "rejected", "reason": "project_not_found"}
+
+    repo_name = _extract_repo_name(project.repo_url)
+    if not repo_name:
+        logger.warning("Cannot extract repo_name from repo_url: %s", project.repo_url)
+        return {"status": "rejected", "reason": "invalid_repo_url"}
+
+    # 2. 从 GitHub 获取 PR 最新 head SHA
+    try:
+        git = GitHubProvider()
+        pr_info = await git.get_pr_info(repo_name, pr_number)
+        pr_head_sha = pr_info.head_sha
+        logger.info(
+            "Fetched PR info: %s#%d head_sha=%s",
+            repo_name, pr_number, pr_head_sha,
+        )
+    except Exception as exc:
+        logger.warning("Failed to fetch PR info for %s#%d: %s", repo_name, pr_number, exc)
+        return {"status": "rejected", "reason": f"github_api_failed: {exc}"}
+
+    # 3. 获取变更文件
+    changed_files: list[dict[str, Any]] = []
+    try:
+        pr_files = await git.get_commit_diff(repo_name, pr_head_sha)
+        changed_files = [
+            {
+                "filename": f.filename, "status": f.status,
+                "additions": f.additions, "deletions": f.deletions,
+                "patch": f.patch,
+            }
+            for f in pr_files
+        ]
+        logger.info(
+            "Fetched %d changed files for PR #%d@%s",
+            len(changed_files), pr_number, pr_head_sha[:8],
+        )
+    except Exception as exc:
+        logger.warning("Failed to fetch PR diff for %s#%d: %s", repo_name, pr_number, exc)
+
+    if not changed_files:
+        logger.warning("No changed files for PR #%d@%s", pr_number, repo_name)
+        return {"status": "accepted", "task_id": None, "reason": "no_changed_files"}
+
+    # 4. 创建评审记录
+    review_repo = ReviewRepo(db)
+    review = await review_repo.create(
+        project_id=project_id, pr_number=pr_number,
+        pr_title=f"PR #{pr_number}", head_sha=pr_head_sha,
+        status=ReviewStatus.PENDING, task_id=None,
+    )
+    logger.info("Review record created: id=%s pr=#%d", review.id, pr_number)
+
+    # 5. 加入评审队列
+    task_id = await enqueue_commit_review(
+        project_id=project_id, repo_name=repo_name,
+        sha=pr_head_sha, changed_files=changed_files, review_id=review.id,
+    )
+
+    if task_id:
+        review.task_id = task_id
+        await db.flush()
+
+    logger.info(
+        "PR review enqueued: project=%s pr=#%d sha=%s task=%s review=%s files=%d",
+        project_id, pr_number, pr_head_sha[:8], task_id, review.id, len(changed_files),
+    )
+
+    return {
+        "status": "accepted",
+        "task_id": task_id or "",
+        "review_id": review.id,
+        "files_count": len(changed_files),
+    }
+
+
+def _extract_repo_name(repo_url: str) -> str | None:
+    """从 repo_url 中提取 owner/repo 格式的仓库名。
+
+    >>> _extract_repo_name("https://github.com/owner/repo")
+    "owner/repo"
+    >>> _extract_repo_name("https://github.com/owner/repo.git")
+    "owner/repo"
+    """
+    parts = repo_url.rstrip("/").split("/")
+    if len(parts) >= 2:
+        name = "/".join(parts[-2:])
+        return name.removesuffix(".git")
+    return None

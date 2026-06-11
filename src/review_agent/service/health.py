@@ -140,6 +140,10 @@ async def check_project_webhooks(session: object) -> None:
         logger.info("Checking webhooks for %d projects", len(projects))
         semaphore = asyncio.Semaphore(5)  # 最多 5 个并发
 
+        # 共享一个 GitHubProvider 实例（复用连接池，减少 SSL 重试日志）
+        git = GitHubProvider()
+        public_url = get_settings().public_url
+
         async def _check_one(project: object) -> None:
             async with semaphore:
                 p = project  # type: ignore[var-annotated]
@@ -147,8 +151,7 @@ async def check_project_webhooks(session: object) -> None:
                 if not repo_name:
                     return
                 try:
-                    git = GitHubProvider()
-                    webhook_url = f"{get_settings().public_url}/webhook/{p.platform}"  # type: ignore[attr-defined]
+                    webhook_url = f"{public_url}/webhook/{p.platform}"  # type: ignore[attr-defined]
                     result = await git.check_webhook(repo_name, webhook_url)
                     old_enabled = p.webhook_enabled  # type: ignore[attr-defined]
                     new_enabled = result["found"]

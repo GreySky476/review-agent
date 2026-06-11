@@ -36,7 +36,7 @@ from review_agent.service.review_graph.pipeline import (
     generate_summary,
     publish_results,
 )
-from review_agent.service.review_graph.state import ReviewState, _reduce_findings
+from review_agent.service.review_graph.state import ReviewState, _merge_lists
 from review_agent.types.enums import ChunkPath, FindingCategory, FindingSeverity, ReviewStatus
 
 # ─── Fixtures ──────────────────────────────────────────────
@@ -62,6 +62,8 @@ def base_state() -> ReviewState:
         "summary_markdown": "",
         "error": None,
         "status": ReviewStatus.RUNNING,
+        "unreviewed_files": [],
+        "error_messages": [],
     }
 
 
@@ -111,10 +113,10 @@ def finding() -> DimensionFinding:
 
 class TestReduceFindings:
     def test_both_none(self) -> None:
-        assert _reduce_findings(None, None) == []
+        assert _merge_lists(None, None) == []
 
     def test_existing_none(self) -> None:
-        result = _reduce_findings(None, [DimensionFinding(
+        result = _merge_lists(None, [DimensionFinding(
             category=FindingCategory.BUG, severity=FindingSeverity.INFO,
             title="t", description="d", suggestion="s", file_path="f",
         )])
@@ -125,11 +127,11 @@ class TestReduceFindings:
             category=FindingCategory.BUG, severity=FindingSeverity.INFO,
             title="t", description="d", suggestion="s", file_path="f",
         )]
-        result = _reduce_findings(existing, None)
+        result = _merge_lists(existing, None)
         assert len(result) == 1
 
     def test_concatenates(self, finding: DimensionFinding) -> None:
-        result = _reduce_findings([finding], [finding])
+        result = _merge_lists([finding], [finding])
         assert len(result) == 2
 
 
@@ -354,7 +356,7 @@ class TestGraphCompilation:
 
         class MockGit:
             async def get_file_content(self, *args: Any, **kwargs: Any) -> str | None:
-                return None
+                return "def foo():\n    pass\n"
             async def publish_commit_summary(self, *args: Any, **kwargs: Any) -> None:
                 pass
 
@@ -371,4 +373,8 @@ class TestGraphCompilation:
             base_state,
             {"configurable": {"thread_id": "test:chunks"}},
         )
-        assert result["status"] == ReviewStatus.COMPLETED
+        # chunks 已注入, get_file_content 返回有效源码, 不应有失败文件
+        assert result.get("unreviewed_files", []) == []
+        # 规则检查节点对 chunks 执行了分析
+        assert "rule_findings" in result
+        assert "ai_findings" in result

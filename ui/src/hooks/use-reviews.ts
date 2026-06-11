@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 
 export interface PullRequest {
@@ -120,5 +120,20 @@ export function useReviewDetail(reviewId: string) {
     },
     enabled: !!reviewId,
     staleTime: 30 * 1000,
+  })
+}
+
+export function useTriggerPRReview(projectId: string, prNumber: number) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async () => {
+      const { data } = await api.post(
+        `/projects/${projectId}/pull-requests/${prNumber}/review`,
+      )
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pull-request', projectId, prNumber] })
+    },
   })
 }

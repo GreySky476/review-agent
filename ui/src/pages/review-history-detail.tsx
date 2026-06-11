@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 
 const statusLabel: Record<string, string> = {
   completed: '已完成', pending: '等待中', running: '进行中', failed: '失败',
+  completed_with_errors: '已完成（有异常）',
 }
 
 const categoryLabel: Record<string, string> = {
@@ -91,7 +92,11 @@ export function ReviewHistoryDetailPage() {
               <span className="text-xs text-muted-more">·</span>
               <span className="font-mono text-xs">{review.head_sha?.slice(0, 8) || '-'}</span>
               <span className="text-xs text-muted-more">·</span>
-              <Badge variant={review.status === 'completed' ? 'success' : review.status === 'failed' ? 'error' : 'warning'}>
+              <Badge variant={
+                review.status === 'completed' ? 'success' :
+                review.status === 'completed_with_errors' ? 'warning' :
+                review.status === 'failed' ? 'error' : 'warning'
+              }>
                 {statusLabel[review.status] || review.status}
               </Badge>
               {review.duration_seconds != null && (
@@ -110,6 +115,34 @@ export function ReviewHistoryDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Warning Banner for Partial Failure */}
+      {review.status === 'completed_with_errors' && (
+        <div className="rounded-lg border border-warning bg-warning/10 p-4">
+          <div className="flex items-start gap-3">
+            <span className="text-lg shrink-0">⚠️</span>
+            <div>
+              <p className="text-sm font-medium text-foreground">评审不完整</p>
+              <p className="mt-1 text-sm text-muted">
+                {review.error_message || '部分文件无法获取源码，评审结果不完整。'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Empty Review (completed, no findings) — show message instead of empty file tree */}
+      {review.status === 'completed' && review.findings_count === 0 && !review.error_message && (
+        <div className="rounded-lg border border-success bg-success/10 p-4">
+          <div className="flex items-start gap-3">
+            <span className="text-lg shrink-0">✅</span>
+            <div>
+              <p className="text-sm font-medium text-foreground">未发现问题</p>
+              <p className="mt-1 text-sm text-muted">该次评审未检测到任何问题。</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Statistics Panel */}
       <div className="grid grid-cols-2 gap-4">

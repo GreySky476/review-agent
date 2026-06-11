@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useErrors, useErrorStats, type ErrorStatsItem } from '@/hooks/use-errors'
+import { useErrors, useErrorStats, useErrorTrend, type ErrorStatsItem } from '@/hooks/use-errors'
 import {
   Skeleton,
   ErrorState,
@@ -7,6 +7,7 @@ import {
   Badge,
   Button,
 } from '@/components/ui/shared'
+import { cn } from '@/lib/utils'
 import {
   BarChart,
   Bar,
@@ -16,29 +17,59 @@ import {
   Tooltip,
   ResponsiveContainer,
   Cell,
+  LineChart,
+  Line,
 } from 'recharts'
 
 const ERROR_TYPE_COLORS: Record<string, string> = {
   ai_call_failed: '#DC2626',
   git_api_failed: '#D97706',
+  git_file_fetch_failed: '#EA580C',
   parse_failed: '#0EA5E9',
   timeout: '#A21CAF',
+  pipeline_crashed: '#BE123C',
+  pipeline_partial_failure: '#F59E0B',
+  webhook_parse_failed: '#6366F1',
+  webhook_verify_failed: '#8B5CF6',
+  queue_enqueue_failed: '#EC4899',
+  db_write_failed: '#EF4444',
+  publish_failed: '#F97316',
+  unknown: '#6B7280',
 }
 
 const ERROR_LABELS: Record<string, string> = {
   ai_call_failed: 'AI 调用失败',
   git_api_failed: 'Git API 失败',
+  git_file_fetch_failed: 'Git 文件拉取失败',
   parse_failed: '解析失败',
   timeout: '超时',
+  pipeline_crashed: '流水线崩溃',
+  pipeline_partial_failure: '流水线部分失败',
+  webhook_parse_failed: 'Webhook 解析失败',
+  webhook_verify_failed: 'Webhook 验证失败',
+  queue_enqueue_failed: '队列入队失败',
+  db_write_failed: '数据库写入失败',
+  publish_failed: '发布评论失败',
+  unknown: '未知错误',
 }
 
 const errorTypeOptions = [
   { value: '', label: '全部类型' },
-  { value: 'ai_call_failed', label: 'AI 调用失败' },
-  { value: 'git_api_failed', label: 'Git API 失败' },
-  { value: 'parse_failed', label: '解析失败' },
-  { value: 'timeout', label: '超时' },
+  ...Object.entries(ERROR_LABELS).map(([value, label]) => ({ value, label })),
 ]
+
+function AlertBanner({ stats }: { stats: ErrorStatsItem[] }) {
+  const spike = stats.find((s) => s.count > 5)
+  if (!spike) return null
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-error/30 bg-error/5 px-4 py-3 text-sm">
+      <span className="text-error font-bold">⚠</span>
+      <span className="text-foreground">
+        <strong>{ERROR_LABELS[spike.error_type] || spike.error_type}</strong> 发生次数较多（{spike.count} 次），建议关注
+      </span>
+    </div>
+  )
+}
 
 export function ErrorsPage() {
   const [errorType, setErrorType] = useState('')
@@ -61,6 +92,7 @@ export function ErrorsPage() {
     page,
   })
   const { data: stats, isLoading: statsLoading } = useErrorStats()
+  const { data: trend, isLoading: trendLoading } = useErrorTrend(14)
 
   if (error) {
     return <ErrorState message="异常数据加载失败" onRetry={refetch} />
@@ -68,51 +100,96 @@ export function ErrorsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-foreground">异常监控</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-foreground">异常监控</h1>
+      </div>
 
-      {/* Stats Chart */}
-      <div className="rounded-lg border border-border bg-surface p-5">
-        <h2 className="mb-4 text-sm font-medium text-foreground">错误类型分布</h2>
-        {statsLoading ? (
-          <Skeleton className="h-48" />
-        ) : !stats?.length ? (
-          <EmptyState title="暂无异常数据" description="系统运行正常" />
-        ) : (
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={stats} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" stroke="#E6E4DD" />
-              <XAxis type="number" stroke="#A8A29E" fontSize={12} />
-              <YAxis
-                dataKey="error_type"
-                type="category"
-                stroke="#A8A29E"
-                fontSize={12}
-                tickFormatter={(v) => ERROR_LABELS[v] || v}
-                width={120}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: '#FFFFFF',
-                  border: '1px solid #E6E4DD',
-                  borderRadius: '8px',
-                  color: '#292524',
+      {/* Alert Banner */}
+      {stats && stats.length > 0 && <AlertBanner stats={stats} />}
+
+      {/* ── Two-column: Type Distribution + Trend ── */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {/* Error Type Distribution */}
+        <div className="rounded-lg border border-border bg-surface p-5">
+          <h2 className="mb-4 text-sm font-medium text-foreground">错误类型分布</h2>
+          {statsLoading ? (
+            <Skeleton className="h-48" />
+          ) : !stats?.length ? (
+            <EmptyState title="暂无异常数据" description="系统运行正常" />
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart
+                data={stats}
+                layout="vertical"
+                onClick={(e) => {
+                  if (e?.activePayload?.[0]?.payload?.error_type) {
+                    setErrorType(e.activePayload[0].payload.error_type)
+                    setPage(1)
+                  }
                 }}
-                formatter={(_: any, __: any, props: any) => [
-                  props.payload.count,
-                  ERROR_LABELS[props.payload.error_type] || props.payload.error_type,
-                ]}
-              />
-              <Bar dataKey="count" radius={[0, 4, 4, 0]}>
-                {stats.map((entry: ErrorStatsItem) => (
-                  <Cell
-                    key={entry.error_type}
-                    fill={ERROR_TYPE_COLORS[entry.error_type] || '#64748B'}
-                  />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        )}
+                style={{ cursor: 'pointer' }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#E6E4DD" />
+                <XAxis type="number" stroke="#A8A29E" fontSize={12} />
+                <YAxis
+                  dataKey="error_type"
+                  type="category"
+                  stroke="#A8A29E"
+                  fontSize={12}
+                  tickFormatter={(v) => ERROR_LABELS[v] || v}
+                  width={130}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: '#FFFFFF',
+                    border: '1px solid #E6E4DD',
+                    borderRadius: '8px',
+                    color: '#292524',
+                  }}
+                  formatter={(_: any, __: any, props: any) => [
+                    props.payload.count,
+                    ERROR_LABELS[props.payload.error_type] || props.payload.error_type,
+                  ]}
+                />
+                <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                  {stats.map((entry: ErrorStatsItem) => (
+                    <Cell
+                      key={entry.error_type}
+                      fill={ERROR_TYPE_COLORS[entry.error_type] || '#64748B'}
+                    />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        {/* Error Trend */}
+        <div className="rounded-lg border border-border bg-surface p-5">
+          <h2 className="mb-4 text-sm font-medium text-foreground">错误趋势（近 14 天）</h2>
+          {trendLoading ? (
+            <Skeleton className="h-48" />
+          ) : !trend?.length ? (
+            <EmptyState title="暂无趋势数据" />
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={trend}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#E6E4DD" />
+                <XAxis dataKey="date" stroke="#A8A29E" fontSize={11} />
+                <YAxis stroke="#A8A29E" fontSize={11} />
+                <Tooltip
+                  contentStyle={{
+                    background: '#FFFFFF',
+                    border: '1px solid #E6E4DD',
+                    borderRadius: '8px',
+                    color: '#292524',
+                  }}
+                />
+                <Line type="monotone" dataKey="count" name="错误数" stroke="#DC2626" strokeWidth={2} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
       </div>
 
       {/* Filters */}
@@ -120,7 +197,7 @@ export function ErrorsPage() {
         <div className="relative" ref={dropdownRef}>
           <button
             onClick={() => setDropdownOpen(!dropdownOpen)}
-            className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-sm text-foreground hover:bg-surface-hover transition-colors min-w-[120px]"
+            className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-sm text-foreground hover:bg-surface-hover transition-colors min-w-[140px]"
           >
             <span className="flex-1 text-left">
               {errorTypeOptions.find((o) => o.value === errorType)?.label || '全部类型'}
@@ -130,7 +207,7 @@ export function ErrorsPage() {
             </svg>
           </button>
           {dropdownOpen && (
-            <div className="absolute left-0 top-full z-20 mt-1 w-full rounded-md border border-border bg-surface shadow-lg">
+            <div className="absolute left-0 top-full z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-border bg-surface shadow-lg">
               {errorTypeOptions.map((opt) => (
                 <button
                   key={opt.value}
@@ -140,7 +217,7 @@ export function ErrorsPage() {
                     setDropdownOpen(false)
                   }}
                   className={`w-full px-3 py-2 text-left text-sm transition-colors hover:bg-surface-hover ${
-                    errorType === opt.value ? 'text-primary' : 'text-foreground'
+                    errorType === opt.value ? 'text-primary font-medium' : 'text-foreground'
                   }`}
                 >
                   {opt.label}
@@ -149,6 +226,11 @@ export function ErrorsPage() {
             </div>
           )}
         </div>
+        {data && (
+          <span className="text-xs text-muted-more">
+            共 {data.total} 条记录
+          </span>
+        )}
       </div>
 
       {/* Error Table */}
@@ -191,19 +273,19 @@ export function ErrorsPage() {
                       : '-'}
                   </td>
                   <td className="px-4 py-4">
-                    <Badge
-                      variant={
-                        err.error_type === 'ai_call_failed'
-                          ? 'error'
-                          : err.error_type === 'git_api_failed'
-                            ? 'warning'
-                            : err.error_type === 'timeout'
-                              ? 'purple'
-                              : 'info'
-                      }
+                    <span
+                      className="inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium"
+                      style={{
+                        color: ERROR_TYPE_COLORS[err.error_type] || '#6B7280',
+                        background: `${ERROR_TYPE_COLORS[err.error_type] || '#6B7280'}15`,
+                      }}
                     >
+                      <span
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{ background: ERROR_TYPE_COLORS[err.error_type] || '#6B7280' }}
+                      />
                       {ERROR_LABELS[err.error_type] || err.error_type}
-                    </Badge>
+                    </span>
                   </td>
                   <td className="px-4 py-4">
                     {err.recovered ? (

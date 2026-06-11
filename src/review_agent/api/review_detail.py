@@ -112,6 +112,7 @@ async def get_review_detail(
         "create_time": review.create_time.isoformat() if review.create_time else None,
         "update_time": review.update_time.isoformat() if review.update_time else None,
         "task_id": review.task_id,
+        "error_message": review.error_message,
         "statistics": {
             "severity": dict(severity_counts),
             "category": dict(category_counts),

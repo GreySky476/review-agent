@@ -33,10 +33,11 @@ from review_agent.service.dimensions.base import (
     review_security,
 )
 from review_agent.service.dimensions.structure import review_structure
+from review_agent.service.error_logger import log_error
 from review_agent.service.git.base import GitProvider, PRFile
 from review_agent.service.publisher import Publisher
 from review_agent.service.standards import load_standards
-from review_agent.types.enums import ChunkPath, FindingCategory, FindingSeverity
+from review_agent.types.enums import ChunkPath, FindingCategory, FindingSeverity, ReviewStatus
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,8 @@ class CommitReviewResult:
     findings: list[DimensionFinding] = field(default_factory=list)
     score: int = 100
     summary_markdown: str = ""
+    status: ReviewStatus = ReviewStatus.COMPLETED
+    error_message: str | None = None
 
 
 # 边界 Token 常量（与 settings 联动，但提供默认值）
@@ -150,6 +153,13 @@ class CommitReviewService:
         source_code = await self._git.get_file_content(repo_name, pr_file.filename, sha)
         if not source_code:
             logger.warning("Failed to fetch content: %s@%s:%s", repo_name, sha, pr_file.filename)
+            await log_error(
+                error_type="git_file_fetch_failed",
+                error_message=(
+                    f"Failed to fetch content for review: "
+                    f"{repo_name}@{sha}:{pr_file.filename}"
+                ),
+            )
             return []
 
         chunks = await chunk_file(pr_file.filename, source_code)
@@ -295,6 +305,13 @@ class CommitReviewService:
                 chunk.file_path,
                 chunk.function_name,
                 exc,
+            )
+            await log_error(
+                error_type="ai_call_failed",
+                error_message=(
+                    f"AI review failed for "
+                    f"{chunk.file_path}:{chunk.function_name}: {exc}"
+                ),
             )
             return []
 

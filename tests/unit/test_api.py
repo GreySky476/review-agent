@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from review_agent.api.app import create_app
 from review_agent.config.database import get_session
+from review_agent.types.orm import ProjectModel
 
 
 class MockResult:
@@ -133,6 +134,115 @@ class TestWebhookEndpoints:
         data = resp.json()
         assert data["status"] == "ignored"
 
+    async def test_pr_review_skipped_when_target_branch_not_matched(
+        self, client: AsyncClient, mock_db: AsyncSession
+    ) -> None:
+        """PR targeting a branch not in review_branches should be skipped."""
+        project = MagicMock(spec=ProjectModel)
+        project.id = "proj-123"
+        project.settings = '{"review_branches": ["main"]}'
+        project.webhook_enabled = True
+        project.platform = "github"
+        project.repo_url = "https://github.com/test/repo"
+
+        mock_db.execute = AsyncMock(return_value=MockResult([project]))
+        mock_db.get = AsyncMock(return_value=project)
+
+        payload = {
+            "action": "opened",
+            "repository": {"full_name": "test/repo"},
+            "pull_request": {
+                "number": 42,
+                "base": {"ref": "develop"},
+                "head": {"sha": "abc123"},
+                "title": "Test PR",
+                "user": {"login": "tester"},
+            },
+        }
+        resp = await client.post(
+            "/webhook/github",
+            json=payload,
+            headers={"X-GitHub-Event": "pull_request"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "skipped"
+        assert data["reason"] == "branch_not_matched"
+
+    async def test_pr_review_accepted_when_target_branch_matches(
+        self, client: AsyncClient, mock_db: AsyncSession
+    ) -> None:
+        """PR targeting 'main' with review_branches=['main'] should proceed."""
+        project = MagicMock(spec=ProjectModel)
+        project.id = "proj-123"
+        project.settings = '{"review_branches": ["main"]}'
+        project.webhook_enabled = True
+        project.platform = "github"
+        project.repo_url = "https://github.com/test/repo"
+
+        mock_db.execute = AsyncMock(return_value=MockResult([project]))
+        mock_db.get = AsyncMock(return_value=project)
+
+        payload = {
+            "action": "opened",
+            "repository": {"full_name": "test/repo"},
+            "pull_request": {
+                "number": 42,
+                "base": {"ref": "main"},
+                "head": {"sha": "abc123"},
+                "title": "Test PR",
+                "user": {"login": "tester"},
+            },
+        }
+        resp = await client.post(
+            "/webhook/github",
+            json=payload,
+            headers={"X-GitHub-Event": "pull_request"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        # Accepted means branch filter passed; review may still fail due to
+        # GitHub API mocking, but the branch filter check is what we test here.
+        assert data["status"] in ("accepted", "ignored"), (
+            f"Expected accepted or ignored, got: {data}"
+        )
+
+    async def test_pr_review_accepted_with_wildcard_branch(
+        self, client: AsyncClient, mock_db: AsyncSession
+    ) -> None:
+        """PR targeting 'release/v1' with review_branches=['release/*'] should proceed."""
+        project = MagicMock(spec=ProjectModel)
+        project.id = "proj-123"
+        project.settings = '{"review_branches": ["release/*"]}'
+        project.webhook_enabled = True
+        project.platform = "github"
+        project.repo_url = "https://github.com/test/repo"
+
+        mock_db.execute = AsyncMock(return_value=MockResult([project]))
+        mock_db.get = AsyncMock(return_value=project)
+
+        payload = {
+            "action": "opened",
+            "repository": {"full_name": "test/repo"},
+            "pull_request": {
+                "number": 42,
+                "base": {"ref": "release/v1"},
+                "head": {"sha": "abc123"},
+                "title": "Test PR",
+                "user": {"login": "tester"},
+            },
+        }
+        resp = await client.post(
+            "/webhook/github",
+            json=payload,
+            headers={"X-GitHub-Event": "pull_request"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] in ("accepted", "ignored"), (
+            f"Expected accepted or ignored, got: {data}"
+        )
+
 
 @pytest.mark.asyncio
 class TestProjectEndpoints:
@@ -171,6 +281,25 @@ class TestProjectEndpoints:
         resp = await client.delete("/api/v1/projects/test-id")
         assert resp.status_code == 200
         assert resp.json()["deleted"] is True
+
+    async def test_webhook_connection_check(self, client: AsyncClient, mock_db: AsyncSession) -> None:
+        """Webhook test endpoint should return events field."""
+        project = MagicMock(spec=ProjectModel)
+        project.id = "proj-123"
+        project.settings = '{"review_branches": ["main"]}'
+        project.webhook_enabled = True
+        project.platform = "github"
+        project.repo_url = "https://github.com/owner/repo"
+        project.is_deleted = False
+
+        mock_db.get = AsyncMock(return_value=project)
+        mock_db.execute.return_value = MockResult([project])
+
+        resp = await client.post("/api/v1/projects/proj-123/webhook/test")
+        assert resp.status_code == 200
+        data = resp.json()
+        # events field should exist after the enhancement
+        assert "events" in data
 
 
 @pytest.mark.asyncio

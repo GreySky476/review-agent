@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { usePullRequestDetail } from '@/hooks/use-reviews'
+import { usePullRequestDetail, useTriggerPRReview } from '@/hooks/use-reviews'
 import { Skeleton, ErrorState, Button } from '@/components/ui/shared'
 import { FindingCard } from '@/components/reviews/finding-card'
 import { FileTree } from '@/components/reviews/file-tree'
@@ -77,6 +77,12 @@ export function ReviewDetailPage() {
 
   const pr = data?.pull_request ?? {}
   const score = pr.review_score
+  const hasReview = (data?.reviews?.length ?? 0) > 0
+
+  const { mutate: triggerReview, isPending: isTriggering } = useTriggerPRReview(
+    id!,
+    Number(prNumber),
+  )
 
   return (
     <div className="space-y-6">
@@ -118,6 +124,21 @@ export function ReviewDetailPage() {
         </div>
       </div>
 
+      {/* Warning Banner for Partial Failure */}
+      {data?.reviews?.[0]?.status === 'completed_with_errors' && (
+        <div className="rounded-lg border border-warning bg-warning/10 p-4">
+          <div className="flex items-start gap-3">
+            <span className="text-lg shrink-0">⚠️</span>
+            <div>
+              <p className="text-sm font-medium text-foreground">评审不完整</p>
+              <p className="mt-1 text-sm text-muted">
+                {data.reviews[0].error_message || '部分文件无法获取源码，评审结果不完整。'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main split view */}
       <div className="flex gap-6">
         {/* File Tree (left) */}
@@ -135,7 +156,21 @@ export function ReviewDetailPage() {
               ← 显示所有文件
             </button>
           )}
-          {filteredFindings.length === 0 ? (
+          {!hasReview ? (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <p className="text-lg text-muted mb-2">暂无评审记录</p>
+              <p className="text-sm text-muted mb-6">
+                点击下方按钮触发 AI 代码评审
+              </p>
+              <Button
+                variant="primary"
+                onClick={() => triggerReview()}
+                disabled={isTriggering}
+              >
+                {isTriggering ? '⏳ 评审触发中...' : '🚀 触发评审'}
+              </Button>
+            </div>
+          ) : filteredFindings.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <p className="text-lg text-muted">✅ 该文件未发现问题</p>
             </div>
