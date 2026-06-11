@@ -11,6 +11,7 @@ from arq.connections import RedisSettings
 
 from review_agent.config.logging import setup_logging
 from review_agent.config.settings import get_settings
+from review_agent.service.error_logger import log_error
 from review_agent.service.git.base import PRFile
 from review_agent.service.git.github_provider import GitHubProvider
 from review_agent.types.enums import ReviewStatus
@@ -41,7 +42,11 @@ async def run_review(
     except Exception:
         error_msg = traceback.format_exc()
         logger.error("Review failed for PR #%d (project=%s): %s", pr_number, project_id, error_msg)
-        # TODO: 写入 ReviewErrorLog（需要 DB session）
+        await log_error(
+            error_type="pipeline_crashed",
+            error_message=error_msg[:2000],
+            project_id=project_id,
+        )
         return {
             "project_id": project_id,
             "pr_number": pr_number,
@@ -122,6 +127,12 @@ async def run_commit_review(
                     sha,
                     traceback.format_exc(),
                 )
+                await log_error(
+                    error_type="publish_failed",
+                    error_message=f"Failed to publish commit summary for {repo_name}@{sha}",
+                    project_id=project_id,
+                    review_id=review_id,
+                )
 
         # 更新 ReviewModel 记录
         if review_id:
@@ -130,9 +141,10 @@ async def run_commit_review(
                     review_repo = ReviewRepo(db)
                     await review_repo.update(
                         review_id,
-                        status=_status_completed,
+                        status=result.status.value,
                         score=result.score,
                         findings_count=len(result.findings),
+                        error_message=result.error_message,
                     )
                     # 创建 FindingModel 记录
                     for finding in result.findings:
@@ -158,6 +170,12 @@ async def run_commit_review(
                 logger.warning(
                     "Failed to update ReviewModel %s: %s", review_id, traceback.format_exc()
                 )
+                await log_error(
+                    error_type="db_write_failed",
+                    error_message=f"Failed to persist ReviewModel {review_id}",
+                    project_id=project_id,
+                    review_id=review_id,
+                )
 
         logger.info(
             "Commit review completed for %s@%s: %d findings, score=%d",
@@ -177,6 +195,12 @@ async def run_commit_review(
     except Exception:
         error_msg = traceback.format_exc()
         logger.error("Commit review failed for %s@%s: %s", repo_name, sha, error_msg)
+        await log_error(
+            error_type="pipeline_crashed",
+            error_message=error_msg[:2000],
+            project_id=project_id,
+            review_id=review_id,
+        )
         # 更新 ReviewModel 为 failed
         if review_id:
             try:
@@ -188,6 +212,12 @@ async def run_commit_review(
             except Exception:
                 logger.warning(
                     "Failed to mark review %s as failed: %s", review_id, traceback.format_exc()
+                )
+                await log_error(
+                    error_type="db_write_failed",
+                    error_message=f"Failed to mark review {review_id} as failed",
+                    project_id=project_id,
+                    review_id=review_id,
                 )
         return {
             "project_id": project_id,
@@ -212,6 +242,8 @@ _DEFAULT_STATE: dict[str, Any] = {
     "summary_markdown": "",
     "error": None,
     "status": ReviewStatus.RUNNING,
+    "unreviewed_files": [],
+    "error_messages": [],
 }
 
 
@@ -247,10 +279,24 @@ async def _run_with_langgraph(
         {"configurable": {"thread_id": f"{repo_name}:{sha}"}},
     )
 
+    error_msgs = result_state.get("error_messages", [])
+    unreviewed = result_state.get("unreviewed_files", [])
+
+    if unreviewed:
+        await log_error(
+            error_type="pipeline_partial_failure",
+            error_message=(
+                f"部分文件未完成评审: {', '.join(unreviewed[:10])}"
+                f"{'...' if len(unreviewed) > 10 else ''}"
+            ),
+        )
+
     return CommitReviewResult(
         findings=result_state.get("deduped_findings", []),
         score=result_state.get("score", 100),
         summary_markdown=result_state.get("summary_markdown", ""),
+        status=result_state.get("status", ReviewStatus.COMPLETED),
+        error_message="; ".join(error_msgs) if error_msgs else None,
     )
 
 
@@ -264,6 +310,11 @@ async def enqueue_review(project_id: str, pr_number: int, head_sha: str) -> str 
         return job.job_id if job else None
     except Exception as exc:
         logger.error("Failed to enqueue review job: %s", exc)
+        await log_error(
+            error_type="queue_enqueue_failed",
+            error_message=f"Failed to enqueue PR review for {project_id}#{pr_number}: {exc}",
+            project_id=project_id,
+        )
         return None
 
 
@@ -290,6 +341,11 @@ async def enqueue_commit_review(
         return job.job_id if job else None
     except Exception as exc:
         logger.error("Failed to enqueue commit review job: %s", exc)
+        await log_error(
+            error_type="queue_enqueue_failed",
+            error_message=f"Failed to enqueue commit review for {project_id}@{sha}: {exc}",
+            project_id=project_id,
+        )
         return None
 
 

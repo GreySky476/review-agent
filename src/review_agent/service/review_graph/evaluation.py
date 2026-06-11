@@ -24,6 +24,7 @@ from review_agent.service.dimensions.base import (
     review_security,
 )
 from review_agent.service.dimensions.structure import review_structure
+from review_agent.service.error_logger import log_error
 from review_agent.service.review_graph.state import ReviewState
 from review_agent.service.standards import load_standards
 from review_agent.types.enums import FindingCategory, FindingSeverity
@@ -215,6 +216,10 @@ async def _ai_review(
         return _parse_ai_response(response.content, chunk)
     except Exception as exc:
         logger.warning("AI review failed for %s/%s: %s", chunk.file_path, chunk.function_name, exc)
+        await log_error(
+            error_type="ai_call_failed",
+            error_message=f"AI review failed for {chunk.file_path}/{chunk.function_name}: {exc}",
+        )
         return []
 
 

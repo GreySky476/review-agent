@@ -34,11 +34,13 @@ const statusConfig: Record<string, { label: string; variant: 'success' | 'warnin
   pending: { label: '等待中', variant: 'warning' },
   running: { label: '进行中', variant: 'info' },
   failed: { label: '失败', variant: 'error' },
+  completed_with_errors: { label: '已完成（有异常）', variant: 'warning' },
 }
 
 const statusOptions = [
   { value: '', label: '全部状态' },
   { value: 'completed', label: '已完成' },
+  { value: 'completed_with_errors', label: '已完成（有异常）' },
   { value: 'pending', label: '等待中' },
   { value: 'running', label: '进行中' },
   { value: 'failed', label: '失败' },

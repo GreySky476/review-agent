@@ -15,12 +15,6 @@ from review_agent.types.enums import Platform
 router = APIRouter(tags=["health"])
 
 
-@router.get("/healthz")
-async def health_check() -> dict[str, str]:
-    """服务存活检查。"""
-    return {"status": "ok"}
-
-
 @router.get("/health/platforms")
 async def platform_health_list(
     db: AsyncSession = Depends(get_session),

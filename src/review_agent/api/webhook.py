@@ -20,6 +20,7 @@ from review_agent.api.webhook_helpers import (
     trigger_pr_review,
 )
 from review_agent.config.database import get_session
+from review_agent.service.error_logger import log_error
 from review_agent.types.enums import EventAction, Platform
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,15 @@ async def github_webhook(
 ) -> dict[str, str]:
     """接收 GitHub Webhook 事件。"""
     raw = await request.body()
-    payload: dict[str, Any] = json.loads(raw)
+    try:
+        payload: dict[str, Any] = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("Invalid JSON payload from GitHub webhook: %s", exc)
+        await log_error(
+            error_type="webhook_parse_failed",
+            error_message=f"GitHub webhook invalid JSON: {exc}",
+        )
+        return {"status": "ignored", "reason": "invalid_json"}
     event_id = x_github_delivery or str(uuid4())
 
     logger.info(

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from sqlalchemy import select
 
 from review_agent.repo.base import BaseRepository
@@ -66,3 +69,56 @@ class ProjectRepo(BaseRepository[ProjectModel]):  # type: ignore[misc]
         )
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_settings(self, project_id: str) -> dict[str, Any]:
+        """读取项目的 settings JSON 配置。
+
+        Returns:
+            解析后的字典，settings 为空或无效时返回空字典。
+        """
+        project = await self.get(project_id)
+        if project is None:
+            return {}
+        try:
+            return json.loads(project.settings) if project.settings else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    async def update_settings(self, project_id: str, **updates: Any) -> dict[str, Any]:
+        """合并更新项目的 settings JSON 配置。
+
+        Args:
+            project_id: 项目 ID。
+            **updates: 要更新的 settings 键值对。
+
+        Returns:
+            更新后的完整 settings 字典。
+
+        Raises:
+            NotFoundError: 项目不存在时抛出。
+        """
+        project = await self.get_or_raise(project_id)
+        current: dict[str, Any] = {}
+        if project.settings:
+            try:
+                current = json.loads(project.settings)
+            except (json.JSONDecodeError, TypeError):
+                current = {}
+        current.update(updates)
+        project.settings = json.dumps(current, ensure_ascii=False)
+        await self._db.flush()
+        return current
+
+    async def get_review_branches(self, project_id: str) -> list[str]:
+        """获取项目的评审分支模式列表。
+
+        从 settings 中读取 review_branches，不存在时返回 ["*"]（全部匹配）。
+
+        Returns:
+            分支模式列表，默认 ["*"]。
+        """
+        settings = await self.get_settings(project_id)
+        branches = settings.get("review_branches")
+        if isinstance(branches, list) and branches:
+            return [str(b) for b in branches]
+        return ["*"]

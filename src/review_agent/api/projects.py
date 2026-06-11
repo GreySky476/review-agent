@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -16,12 +18,40 @@ from review_agent.repo.pull_request import PullRequestRepo
 from review_agent.repo.review import ReviewRepo
 from review_agent.repo.webhook_event import WebhookEventRepo
 from review_agent.service.git.github_provider import GitHubProvider
+from review_agent.types.exceptions import ValidationError
 from review_agent.types.models import ProjectCreate, ProjectUpdate
 from review_agent.types.orm import ProjectModel
 
 router = APIRouter(tags=["projects"])
 
 _WEBHOOK_INACTIVE_HOURS = 24
+
+# UUID 正则：xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+_UUID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _validate_project_name(name: str) -> None:
+    """校验项目名称，拒绝纯 UUID 格式的名称。"""
+    if _UUID_PATTERN.match(name.strip()):
+        msg = f"项目名称不能是 UUID 格式: {name}"
+        raise ValidationError(msg)
+
+
+async def _get_review_branches(project: ProjectModel) -> list[str]:
+    """从 project.settings JSON 中读取 review_branches。"""
+    if not project.settings:
+        return ["*"]
+    try:
+        settings = json.loads(project.settings)
+        branches = settings.get("review_branches")
+        if isinstance(branches, list) and branches:
+            return [str(b) for b in branches]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return ["*"]
 
 
 async def _format_project(
@@ -62,6 +92,9 @@ async def _format_project(
         active_days = max(0, days_since)
         status = "active" if days_since <= 7 else "inactive"
 
+    # 从 settings 读取分支过滤配置
+    review_branches = await _get_review_branches(project)
+
     return {
         "id": project.id,
         "name": project.name,
@@ -81,6 +114,7 @@ async def _format_project(
         "latest_score": latest_score,
         "status": status,
         "active_days": active_days,
+        "review_branches": review_branches,
     }
 
 
@@ -90,6 +124,7 @@ async def create_project(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """注册新项目。"""
+    _validate_project_name(body.name)
     repo = ProjectRepo(db)
     project = await repo.create(
         name=body.name,
@@ -166,12 +201,22 @@ async def get_project(
 @router.patch("/projects/{project_id}")
 async def update_project(
     project_id: str,
-    _body: ProjectUpdate,
+    body: ProjectUpdate,
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """更新项目配置。"""
     repo = ProjectRepo(db)
-    await repo.update(project_id, name=_body.name or project_id)
+    if body.name is not None:
+        _validate_project_name(body.name)
+        await repo.update(project_id, name=body.name)
+    if body.review_branches is not None:
+        await repo.update_settings(project_id, review_branches=body.review_branches)
+    # 返回完整项目信息，前端可立即使用
+    project = await repo.get_active(project_id)
+    if project:
+        webhook_repo = WebhookEventRepo(db)
+        last_event = await webhook_repo.last_event_time(project_id)
+        return await _format_project(project, last_event, db)
     return {"id": project_id, "updated": True}
 
 

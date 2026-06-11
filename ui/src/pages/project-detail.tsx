@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useProject } from '@/hooks/use-projects'
 import { usePullRequests } from '@/hooks/use-reviews'
 import { useCommits, useTriggerCommitReview } from '@/hooks/use-commits'
 import { useQualityTrends } from '@/hooks/use-dashboard'
+import { useUpdateProject } from '@/hooks/use-projects'
 import { api } from '@/lib/api-client'
 import {
   Skeleton,
@@ -43,6 +44,7 @@ function ReviewStatusBadge({ status }: { status: string | null }) {
     pending: { variant: 'warning', label: '等待中' },
     running: { variant: 'info', label: '进行中' },
     failed: { variant: 'error', label: '失败' },
+    completed_with_errors: { variant: 'warning', label: '已完成（有异常）' },
   }
   const cfg = config[status]
   return cfg ? <Badge variant={cfg.variant}>{cfg.label}</Badge> : null
@@ -163,7 +165,20 @@ export function ProjectDetailPage() {
   const [showSettings, setShowSettings] = useState(false)
   const [copied, setCopied] = useState(false)
   const [webhookTestResult, setWebhookTestResult] = useState<string | null>(null)
+  const [reviewBranchesInput, setReviewBranchesInput] = useState<string>('*')
+  const [saveSuccess, setSaveSuccess] = useState<string | null>(null)
+  const [activeSettingsTab, setActiveSettingsTab] = useState<string>('basic')
+  const updateProject = useUpdateProject()
   const queryClient = useQueryClient()
+
+  // 当 project.review_branches 变化时同步到输入框
+  useEffect(() => {
+    if (project?.review_branches) {
+      setReviewBranchesInput(project.review_branches.join(', '))
+    } else if (project) {
+      setReviewBranchesInput('*')
+    }
+  }, [project?.review_branches, project?.id])
   const testWebhook = useMutation({
     mutationFn: async () => {
       const { data } = await api.post(`/projects/${id}/webhook/test`)
@@ -212,7 +227,14 @@ export function ProjectDetailPage() {
             </button>
             <h1 className="text-2xl font-bold text-foreground">{project.name}</h1>
           </div>
-          <Button variant="secondary" size="sm" onClick={() => setShowSettings(true)}>
+          <Button variant="secondary" size="sm" onClick={async () => {
+            setSaveSuccess(null)
+            // 先刷新项目数据确保拿到最新配置
+            const { data: fresh } = await refetchProject()
+            const branches = fresh?.review_branches
+            setReviewBranchesInput(branches?.join(', ') || '*')
+            setShowSettings(true)
+          }}>
             设置
           </Button>
         </div>
@@ -527,96 +549,238 @@ export function ProjectDetailPage() {
       {/* Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-lg rounded-xl border border-border bg-surface p-6 shadow-lg">
-            <h2 className="text-lg font-bold text-foreground">项目设置</h2>
-            <p className="mt-1 text-sm text-muted">项目信息和 Webhook 配置</p>
-
-            <div className="mt-4 space-y-5">
-              {/* Basic Info */}
-              <div>
-                <h3 className="text-sm font-medium text-foreground">基本信息</h3>
-                <div className="mt-2 space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-muted">项目 ID</span>
-                    <span className="text-foreground font-mono text-xs">{project.id}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted">名称</span>
-                    <span className="text-foreground">{project.name}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted">平台</span>
-                    <PlatformBadge platform={project.platform as 'github' | 'gitlab' | 'gitee'} />
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted">仓库 URL</span>
-                    <span className="text-foreground font-mono text-xs truncate max-w-[240px]">{project.repo_url}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted">Webhook</span>
-                    <WebhookStatus status={project.webhook_status || (project.webhook_enabled ? 'connected' : 'disconnected')} />
-                  </div>
-                </div>
-              </div>
-
-              {/* Webhook Config */}
-              <div className="rounded-lg border border-border bg-surface-alt p-4">
-                <h3 className="text-sm font-medium text-foreground">配置 Webhook</h3>
-                <p className="mt-1 text-xs text-muted">
-                  在 GitHub/GitLab/Gitee 的仓库设置中添加以下 Webhook URL 以自动同步 PR 数据：
-                </p>
-                <div className="mt-2 flex items-center gap-2 rounded-md bg-black/30 px-3 py-2 text-xs font-mono text-primary">
-                  <span className="flex-1 truncate font-mono text-xs">
-                    ngrok URL 替换: ngrok_地址/webhook/{project.platform}
-                  </span>
+          <div className="flex w-full max-w-2xl h-[70vh] rounded-xl border border-border bg-surface shadow-lg overflow-hidden">
+            {/* Left Sidebar */}
+            <div className="w-44 shrink-0 border-r border-border bg-surface-alt p-3 flex flex-col">
+              <h2 className="text-sm font-bold text-foreground px-3 py-2">项目设置</h2>
+              <div className="mt-2 space-y-1 flex-1">
+                {[
+                  { id: 'basic', label: '基本信息', icon: '📋' },
+                  { id: 'webhook', label: 'Webhook', icon: '🔗' },
+                  { id: 'branches', label: '分支过滤', icon: '🌿' },
+                ].map((tab) => (
                   <button
-                    onClick={async () => {
-                      const url = `http://localhost:8000/webhook/${project.platform}`
-                      try {
-                        await navigator.clipboard.writeText(url)
-                        setCopied(true)
-                        setTimeout(() => setCopied(false), 2000)
-                      } catch { /* fallback: ignore */ }
-                    }}
-                    className="shrink-0 text-xs text-muted hover:text-foreground transition-colors min-w-[4rem] text-center"
-                    title="复制"
+                    key={tab.id}
+                    onClick={() => setActiveSettingsTab(tab.id)}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors text-left ${
+                      activeSettingsTab === tab.id
+                        ? 'bg-primary/10 text-primary font-medium'
+                        : 'text-muted hover:text-foreground hover:bg-surface-hover'
+                    }`}
                   >
-                    {copied ? '已复制!' : '复制'}
+                    <span className="text-base">{tab.icon}</span>
+                    <span>{tab.label}</span>
                   </button>
-                </div>
-                <div className="mt-3 space-y-1 text-xs text-muted">
-                  <p>• 内容类型: <span className="text-foreground">application/json</span></p>
-                  <p>• 触发事件: <span className="text-foreground">Pull Request (opened, synchronize, closed)</span></p>
-                  <p>• 开发环境使用 ngrok 隧道暴露后端 8000 端口</p>
-                  <p>• 在 ngrok 终端查看公网 URL，替换上方地址</p>
-                </div>
-              </div>
-
-              {/* Test Connection */}
-              <div className="flex items-center gap-3">
-                <button onClick={() => { setWebhookTestResult(null); testWebhook.mutate() }}
-                  disabled={testWebhook.isPending}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-sm text-foreground hover:bg-surface-hover transition-colors disabled:opacity-50">
-                  {testWebhook.isPending ? '测试中...' : '测试连接'}
-                </button>
-                {webhookTestResult && (
-                  <span className={`text-xs ${webhookTestResult.startsWith('已连接') ? 'text-success' : 'text-warning'}`}>
-                    {webhookTestResult}
-                  </span>
-                )}
-              </div>
-
-              {/* Sync Notice */}
-              <div className="rounded-lg border border-border/50 bg-surface-alt/50 p-3 text-xs text-muted">
-                PR 数据通过 Webhook 自动同步。配置 Webhook 后，新创建的 PR 将在提交时自动出现在列表中。
-                如尚未配置，PR 列表为空是正常现象。
+                ))}
               </div>
             </div>
 
-            <div className="mt-6 flex justify-end">
-              <Button variant="secondary" size="md" onClick={() => setShowSettings(false)}>
-                关闭
-              </Button>
+            {/* Right Content */}
+            <div className="flex-1 flex flex-col">
+              {/* Header with close button */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+                <div>
+                  <h2 className="text-lg font-bold text-foreground">
+                    {activeSettingsTab === 'basic' && '基本信息'}
+                    {activeSettingsTab === 'webhook' && 'Webhook 配置'}
+                    {activeSettingsTab === 'branches' && '分支过滤'}
+                  </h2>
+                  <p className="text-sm text-muted">
+                    {activeSettingsTab === 'basic' && '项目的基础配置信息'}
+                    {activeSettingsTab === 'webhook' && '配置 Webhook 以自动同步仓库数据'}
+                    {activeSettingsTab === 'branches' && '设置需要触发 AI 评审的分支范围'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowSettings(false)}
+                  className="shrink-0 rounded-md p-1.5 text-muted hover:text-foreground hover:bg-surface-hover transition-colors"
+                  title="关闭"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Scrollable content */}
+              <div className="flex-1 p-6 overflow-y-auto">
+              {/* ═══ Basic Info ═══ */}
+              {activeSettingsTab === 'basic' && (
+                <div className="space-y-5">
+                  <div>
+                    <h3 className="text-base font-bold text-foreground">基本信息</h3>
+                    <p className="mt-1 text-sm text-muted">项目的基础配置信息</p>
+                  </div>
+                  <div className="space-y-3 text-sm">
+                    <div className="flex justify-between items-center rounded-lg border border-border bg-surface-alt px-4 py-3">
+                      <span className="text-muted">项目 ID</span>
+                      <span className="text-foreground font-mono text-xs">{project.id}</span>
+                    </div>
+                    <div className="flex justify-between items-center rounded-lg border border-border bg-surface-alt px-4 py-3">
+                      <span className="text-muted">名称</span>
+                      <span className="text-foreground">{project.name}</span>
+                    </div>
+                    <div className="flex justify-between items-center rounded-lg border border-border bg-surface-alt px-4 py-3">
+                      <span className="text-muted">平台</span>
+                      <PlatformBadge platform={project.platform as 'github' | 'gitlab' | 'gitee'} />
+                    </div>
+                    <div className="flex justify-between items-center rounded-lg border border-border bg-surface-alt px-4 py-3">
+                      <span className="text-muted">仓库 URL</span>
+                      <span className="text-foreground font-mono text-xs truncate max-w-[200px]">{project.repo_url}</span>
+                    </div>
+                    <div className="flex justify-between items-center rounded-lg border border-border bg-surface-alt px-4 py-3">
+                      <span className="text-muted">Webhook 状态</span>
+                      <WebhookStatus status={project.webhook_status || (project.webhook_enabled ? 'connected' : 'disconnected')} />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ═══ Webhook ═══ */}
+              {activeSettingsTab === 'webhook' && (
+                <div className="space-y-5">
+                  <div>
+                    <h3 className="text-base font-bold text-foreground">Webhook 配置</h3>
+                    <p className="mt-1 text-sm text-muted">
+                      在 GitHub/GitLab/Gitee 的仓库设置中添加以下 Webhook URL 以自动同步 PR 数据
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg border border-border bg-surface-alt p-4">
+                    <h4 className="text-sm font-medium text-foreground">Webhook URL</h4>
+                    <div className="mt-2 flex items-center gap-2 rounded-md bg-black/30 px-3 py-2 text-xs font-mono text-primary">
+                      <span className="flex-1 truncate font-mono text-xs">
+                        ngrok URL 替换: ngrok_地址/webhook/{project.platform}
+                      </span>
+                      <button
+                        onClick={async () => {
+                          const url = `http://localhost:8000/webhook/${project.platform}`
+                          try {
+                            await navigator.clipboard.writeText(url)
+                            setCopied(true)
+                            setTimeout(() => setCopied(false), 2000)
+                          } catch { /* fallback: ignore */ }
+                        }}
+                        className="shrink-0 text-xs text-muted hover:text-foreground transition-colors min-w-[4rem] text-center"
+                        title="复制"
+                      >
+                        {copied ? '已复制!' : '复制'}
+                      </button>
+                    </div>
+                    <div className="mt-3 space-y-1 text-xs text-muted">
+                      <p>• 内容类型: <span className="text-foreground">application/json</span></p>
+                      <p>• 触发事件: <span className="text-foreground">Pull Request (opened, synchronize, closed)</span></p>
+                      <p>• 开发环境使用 ngrok 隧道暴露后端 8000 端口</p>
+                      <p>• 在 ngrok 终端查看公网 URL，替换上方地址</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => { setWebhookTestResult(null); testWebhook.mutate() }}
+                      disabled={testWebhook.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-sm text-foreground hover:bg-surface-hover transition-colors disabled:opacity-50">
+                      {testWebhook.isPending ? '测试中...' : '测试连接'}
+                    </button>
+                    {webhookTestResult && (
+                      <span className={`text-xs ${webhookTestResult.startsWith('已连接') ? 'text-success' : 'text-warning'}`}>
+                        {webhookTestResult}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="rounded-lg border border-border/50 bg-surface-alt/50 p-3 text-xs text-muted">
+                    PR 数据通过 Webhook 自动同步。配置 Webhook 后，新创建的 PR 将在提交时自动出现在列表中。
+                    如尚未配置，PR 列表为空是正常现象。
+                  </div>
+                </div>
+              )}
+
+              {/* ═══ Branch Filter ═══ */}
+              {activeSettingsTab === 'branches' && (
+                <div className="space-y-5">
+                  <div>
+                    <h3 className="text-base font-bold text-foreground">评审分支过滤</h3>
+                    <p className="mt-1 text-sm text-muted">
+                      只有匹配以下分支模式的推送才会触发 AI 评审，减少不必要的调用。
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg border border-border bg-surface-alt p-4">
+                    <label className="block text-sm font-medium text-foreground" htmlFor="review-branches">
+                      分支模式
+                    </label>
+                    <p className="mt-1 text-xs text-muted mb-3">
+                      多个模式用逗号分隔，支持通配符 <code className="text-primary">*</code>
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        id="review-branches"
+                        type="text"
+                        value={reviewBranchesInput}
+                        onChange={(e) => setReviewBranchesInput(e.target.value)}
+                        placeholder="main, develop, release/*"
+                        className="flex-1 rounded-md border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted-more focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={updateProject.isPending}
+                        onClick={async () => {
+                          setSaveSuccess(null)
+                          const branches = reviewBranchesInput
+                            .split(/[,，\s]+/)
+                            .map((b) => b.trim())
+                            .filter(Boolean)
+                          try {
+                            await updateProject.mutateAsync({
+                              id: project.id,
+                              review_branches: branches.length > 0 ? branches : ['*'],
+                            })
+                            setSaveSuccess('分支配置已保存')
+                            setTimeout(() => setSaveSuccess(null), 3000)
+                          } catch {
+                            setSaveSuccess('保存失败，请重试')
+                          }
+                        }}
+                      >
+                        {updateProject.isPending ? '保存中...' : '保存'}
+                      </Button>
+                    </div>
+                    {saveSuccess && (
+                      <p className={`mt-2 text-xs ${saveSuccess.includes('失败') ? 'text-error' : 'text-success'}`}>
+                        {saveSuccess}
+                      </p>
+                    )}
+                    {updateProject.isError && (
+                      <p className="mt-2 text-xs text-error">保存失败，请稍后重试</p>
+                    )}
+                  </div>
+
+                  <div className="rounded-lg border border-border bg-surface-alt p-4">
+                    <h4 className="text-sm font-medium text-foreground">使用示例</h4>
+                    <div className="mt-2 space-y-2 text-xs text-muted">
+                      <div className="flex items-center gap-2">
+                        <code className="rounded bg-black/30 px-2 py-0.5 text-foreground">*</code>
+                        <span>所有分支（默认）</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <code className="rounded bg-black/30 px-2 py-0.5 text-foreground">main</code>
+                        <span>仅 main 分支</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <code className="rounded bg-black/30 px-2 py-0.5 text-foreground">main, develop</code>
+                        <span>main 和 develop 分支</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <code className="rounded bg-black/30 px-2 py-0.5 text-foreground">release/*</code>
+                        <span>所有 release 前缀的分支</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              </div>
             </div>
           </div>
         </div>

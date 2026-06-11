@@ -15,6 +15,7 @@ export interface Project {
   latest_score: number | null
   status: 'active' | 'inactive' | 'dormant'
   active_days: number | null
+  review_branches?: string[]
 }
 
 export interface ProjectCreate {
@@ -81,6 +82,24 @@ export function useDeleteProject() {
       return data
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+    },
+  })
+}
+
+export function useUpdateProject() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({
+      id,
+      ...body
+    }: { id: string } & Partial<{ name: string; review_branches: string[] }>) => {
+      const { data } = await api.patch(`/projects/${id}`, body)
+      return data as Project & { id: string }
+    },
+    onSuccess: (result) => {
+      queryClient.setQueryData(['project', result.id], result)
       queryClient.invalidateQueries({ queryKey: ['projects'] })
     },
   })

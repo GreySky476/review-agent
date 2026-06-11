@@ -118,6 +118,7 @@ class ReviewModel(Base, TimestampMixin, SoftDeleteMixin):
     files_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     commits_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # relationships
     project: Mapped[ProjectModel] = relationship("ProjectModel", back_populates="reviews")

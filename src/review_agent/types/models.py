@@ -7,6 +7,7 @@ ORM 模型定义在 `types/orm.py`。
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -50,6 +51,7 @@ class ProjectUpdate(BaseModel):
 
     name: str | None = None
     webhook_enabled: bool | None = None
+    review_branches: list[str] | None = None
 
 
 # ── Review（评审记录） ────────────────────────────────
@@ -290,6 +292,51 @@ class TrendDataPoint(BaseModel):
     critical: int
     warning: int
     info: int
+
+
+class EnterpriseDashboard(BaseModel):
+    """企业级仪表盘执行摘要。"""
+
+    total_projects: int = 0
+    total_projects_change: float = 0.0  # 较上周变化百分比
+    reviews_this_week: int = 0
+    reviews_week_change: float = 0.0
+    avg_score: float = 0.0
+    avg_score_change: float = 0.0
+    error_rate: float = 0.0  # completed_with_errors / total
+    error_rate_change: float = 0.0
+    review_coverage: float = 0.0  # 有评审的 commit 占比
+    reviews_by_status: dict[str, int] = Field(default_factory=dict)
+    top_findings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ProjectHealthItem(BaseModel):
+    """项目健康矩阵条目。"""
+
+    project_id: str
+    project_name: str
+    platform: str
+    latest_score: int | None = None
+    score_change: int | None = None  # 较 7 天前变化
+    health: str = "dormant"  # active / warning / critical / dormant
+    review_count_7d: int = 0
+    error_count_7d: int = 0
+    last_review_at: str | None = None
+
+
+class RecentReviewItem(BaseModel):
+    """最近评审活动条目。"""
+
+    review_id: str
+    project_name: str
+    project_id: str
+    pr_title: str
+    branch: str | None = None
+    status: str
+    score: int | None = None
+    head_sha: str
+    duration_seconds: int | None = None
+    created_at: str | None = None
 
 
 class ErrorStats(BaseModel):

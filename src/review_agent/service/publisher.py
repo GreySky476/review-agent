@@ -88,7 +88,12 @@ class Publisher:
         threshold = int(self._settings.verbose_report_threshold)
         return serious_count > threshold
 
-    def generate_summary(self, findings: list[DimensionFinding], score: int) -> str:
+    def generate_summary(
+        self,
+        findings: list[DimensionFinding],
+        score: int,
+        unreviewed_count: int = 0,
+    ) -> str:
         """生成 Markdown 格式的评审摘要。
 
         Findings 按重要性排序输出：先按严重性降序（critical→warning→info），
@@ -97,6 +102,7 @@ class Publisher:
         Args:
             findings: 去重后的 Finding 列表。
             score: 评审总分。
+            unreviewed_count: 因错误无法评审的文件数。
 
         Returns:
             Markdown 格式的摘要文本。
@@ -112,6 +118,11 @@ class Publisher:
             rating = "🔴 待改进"
 
         lines.append(f"**总分：{score}/100** — {rating}\n")
+
+        if unreviewed_count:
+            lines.append(
+                f"⚠ **{unreviewed_count} 个文件未能完成评审**（无法获取源码）\n",
+            )
 
         if not findings:
             lines.append("✅ 未发现问题。\n")

@@ -118,6 +118,21 @@ export function ReviewDetailPage() {
         </div>
       </div>
 
+      {/* Warning Banner for Partial Failure */}
+      {data?.reviews?.[0]?.status === 'completed_with_errors' && (
+        <div className="rounded-lg border border-warning bg-warning/10 p-4">
+          <div className="flex items-start gap-3">
+            <span className="text-lg shrink-0">⚠️</span>
+            <div>
+              <p className="text-sm font-medium text-foreground">评审不完整</p>
+              <p className="mt-1 text-sm text-muted">
+                {data.reviews[0].error_message || '部分文件无法获取源码，评审结果不完整。'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main split view */}
       <div className="flex gap-6">
         {/* File Tree (left) */}

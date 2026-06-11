@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -98,4 +98,27 @@ async def error_statistics(
             last_occurred=row["last_occurred"],
         )
         for row in rows
+    ]
+
+
+@router.get("/errors/trend")
+async def error_trend(
+    days: int = Query(7, ge=1, le=90),
+    db: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """按天统计错误数量趋势（用于折线图）。"""
+    start = datetime.now(UTC) - timedelta(days=days)
+    stmt = (
+        select(
+            func.date(ReviewErrorLog.create_time).label("date"),
+            func.count(ReviewErrorLog.id).label("count"),
+        )
+        .where(ReviewErrorLog.create_time >= start)
+        .group_by(func.date(ReviewErrorLog.create_time))
+        .order_by(func.date(ReviewErrorLog.create_time))
+    )
+    result = await db.execute(stmt)
+    return [
+        {"date": str(row.date), "count": row.count}
+        for row in result.all()
     ]

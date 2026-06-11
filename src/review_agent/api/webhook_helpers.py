@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import hashlib
 import hmac
 import logging
@@ -16,6 +17,7 @@ from review_agent.repo.project import ProjectRepo
 from review_agent.repo.pull_request import PullRequestRepo
 from review_agent.repo.review import ReviewRepo
 from review_agent.repo.webhook_event import WebhookEventRepo
+from review_agent.service.error_logger import log_error
 from review_agent.service.git.github_provider import GitHubProvider
 from review_agent.service.queue import enqueue_commit_review
 from review_agent.types.enums import EventAction, Platform, ReviewStatus
@@ -49,6 +51,10 @@ async def ensure_project_connected(
     project = await project_repo.get_by_platform_repo(platform, repo_url)
     if not project:
         logger.warning("No project found for repo: %s", repo_url)
+        await log_error(
+            error_type="webhook_parse_failed",
+            error_message=f"No project matching repo_url: {repo_url}",
+        )
         return None
     if not project.webhook_enabled:
         project.webhook_enabled = True
@@ -88,6 +94,16 @@ async def handle_push_event(
     sha: str = head_commit["id"]
     ref: str = payload.get("ref", "")
     branch = ref.replace("refs/heads/", "") if ref.startswith("refs/heads/") else ref
+
+    # 检查分支是否在项目的评审分支列表中
+    allowed = await project_repo.get_review_branches(project.id)
+    if not any(fnmatch.fnmatch(branch, pattern) for pattern in allowed):
+        logger.info(
+            "Skipped push review: branch='%s' not in review list %s (project=%s)",
+            branch, allowed, project.id,
+        )
+        return {"status": "skipped", "reason": "branch_not_matched", "branch": branch}
+
     changed_files: list[dict[str, Any]] = []
     for filepath in head_commit.get("added", []):
         changed_files.append({"filename": filepath, "status": "added"})
@@ -160,6 +176,10 @@ async def trigger_pr_review(
     except Exception as exc:
         logger.warning(
             "Failed to fetch PR #%d diff for %s: %s", pr_number, repo_full_name, exc,
+        )
+        await log_error(
+            error_type="git_api_failed",
+            error_message=f"Failed to fetch PR #{pr_number} diff for {repo_full_name}: {exc}",
         )
     if not changed_files:
         logger.info("No changed files found for PR #%d, skipping review", pr_number)
