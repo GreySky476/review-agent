@@ -6,6 +6,11 @@
 >
 > [完整产品设计](docs/project-design.md) | [架构总览](docs/architecture/overview.md)
 
+## 图片展示
+![1bddc9e44a7621b36ac1454477b3dad4.png](img/1bddc9e44a7621b36ac1454477b3dad4.png)
+![92e29ac9614b3f63b2e679ed57505afe.png](img/92e29ac9614b3f63b2e679ed57505afe.png)
+![9dea7a4de8d7f2f048ac611feac5e6ed.png](img/9dea7a4de8d7f2f048ac611feac5e6ed.png)
+![fa2a82f90467594fc0d60e7fe57d78f3.png](img/fa2a82f90467594fc0d60e7fe57d78f3.png)
 ---
 
 ## 核心特性

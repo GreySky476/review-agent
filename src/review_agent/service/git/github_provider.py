@@ -176,7 +176,7 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
     async def check_webhook(self, repo_name: str, webhook_url: str) -> dict[str, Any]:
         """检查仓库是否已配置指定 URL 的 Webhook。
 
-        返回: found/hook_id/active/last_response
+        返回: found/hook_id/active/events/last_response
         """
         try:
             repo = self._client.get_repo(repo_name)
@@ -188,16 +188,23 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
                         "found": True,
                         "hook_id": hook.id,
                         "active": hook.active,
+                        "events": list(hook.events) if hook.events else [],
                         "last_response": None,
                     }
-            return {"found": False, "hook_id": None, "active": None, "last_response": None}
+            return {
+                "found": False, "hook_id": None, "active": None,
+                "events": [], "last_response": None,
+            }
         except Exception as exc:
             logger.warning("Failed to check webhook for %s: %s", repo_name, exc)
             await log_error(
                 error_type="git_api_failed",
                 error_message=f"Failed to check webhook for {repo_name}: {exc}",
             )
-            return {"found": False, "hook_id": None, "active": None, "last_response": str(exc)}
+            return {
+                "found": False, "hook_id": None, "active": None,
+                "events": [], "last_response": str(exc),
+            }
 
     async def send_webhook_ping(self, repo_name: str, hook_id: int) -> bool:
         """向指定 Webhook 发送测试 ping。
