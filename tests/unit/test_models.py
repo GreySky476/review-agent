@@ -25,12 +25,15 @@ class TestProjectModels:
 
     def test_project_create_valid(self) -> None:
         """ProjectCreate 应正确解析。"""
-        pc = ProjectCreate(name="test", platform=Platform.GITLAB, repo_url="https://gitlab.com/test")
+        pc = ProjectCreate(
+            name="test", platform=Platform.GITLAB, repo_url="https://gitlab.com/test"
+        )
         assert pc.platform == Platform.GITLAB
 
     def test_project_update_optional(self) -> None:
         """ProjectUpdate 所有字段应为可选。"""
         from review_agent.types.models import ProjectUpdate
+
         pu = ProjectUpdate()
         assert pu.name is None
         assert pu.webhook_enabled is None
@@ -123,6 +126,7 @@ class TestUserModel:
     def test_user_defaults(self) -> None:
         """User 应使用默认角色。"""
         from review_agent.types.enums import UserRole
+
         u = User(username="alice", email="alice@example.com")
         assert u.role == UserRole.VIEWER
         assert u.is_active is True
@@ -132,6 +136,7 @@ class TestWebhookEventModel:
     def test_webhook_event_defaults(self) -> None:
         """WebhookEvent 应使用默认值。"""
         from review_agent.types.enums import EventAction
+
         e = WebhookEvent(
             project_id=UUID(int=1),
             platform=Platform.GITHUB,
@@ -147,6 +152,7 @@ class TestPullRequestModel:
     def test_pull_request_defaults(self) -> None:
         """PullRequest 应使用默认值。"""
         from review_agent.types.models import PullRequest
+
         pr = PullRequest(
             project_id=UUID(int=1),
             pr_number=42,
@@ -159,6 +165,7 @@ class TestPullRequestModel:
     def test_pull_request_merged_state(self) -> None:
         """PullRequest 合并状态。"""
         from review_agent.types.models import PullRequest
+
         pr = PullRequest(
             project_id=UUID(int=1),
             pr_number=42,
@@ -175,6 +182,7 @@ class TestCommitModel:
     def test_commit_defaults(self) -> None:
         """Commit 应使用默认值。"""
         from review_agent.types.models import Commit
+
         c = Commit(
             project_id=UUID(int=1),
             sha="abc123",
@@ -185,6 +193,7 @@ class TestCommitModel:
     def test_commit_review_request(self) -> None:
         """CommitReviewRequest 应正确解析。"""
         from review_agent.types.models import CommitReviewRequest
+
         req = CommitReviewRequest(sha="abc123", mention_user="reviewer-bot")
         assert req.sha == "abc123"
         assert req.mention_user == "reviewer-bot"
@@ -194,6 +203,7 @@ class TestCommentModel:
     def test_comment_defaults(self) -> None:
         """Comment 应正确解析。"""
         from review_agent.types.models import Comment
+
         c = Comment(
             review_id=UUID(int=1),
             author="user1",
@@ -205,12 +215,14 @@ class TestCommentModel:
     def test_comment_create(self) -> None:
         """CommentCreate 应正确解析。"""
         from review_agent.types.models import CommentCreate
+
         cc = CommentCreate(author="user1", content="Looks good")
         assert cc.action is None
 
     def test_comment_with_action(self) -> None:
         """Comment 支持 action 字段。"""
         from review_agent.types.models import CommentCreate
+
         cc = CommentCreate(author="user1", content="Accepted", action="accepted")
         assert cc.action == "accepted"
 
@@ -219,6 +231,7 @@ class TestReviewErrorLogModel:
     def test_error_log_defaults(self) -> None:
         """ReviewErrorLog 应使用默认值。"""
         from review_agent.types.models import ReviewErrorLog
+
         e = ReviewErrorLog(
             error_type="ai_call_failed",
             error_message="Timeout connecting to API",
@@ -234,6 +247,7 @@ class TestQualitySnapshotModel:
         from datetime import date
 
         from review_agent.types.models import QualitySnapshot
+
         qs = QualitySnapshot(
             project_id=UUID(int=1),
             snapshot_date=date(2026, 6, 1),
@@ -247,6 +261,7 @@ class TestDashboardStatsModel:
     def test_dashboard_stats_defaults(self) -> None:
         """DashboardStats 应使用默认值。"""
         from review_agent.types.models import DashboardStats
+
         ds = DashboardStats()
         assert ds.total_projects == 0
         assert ds.total_reviews_today == 0
@@ -255,6 +270,7 @@ class TestDashboardStatsModel:
     def test_dashboard_stats_with_data(self) -> None:
         """DashboardStats 应接受数据。"""
         from review_agent.types.models import DashboardStats
+
         ds = DashboardStats(
             total_projects=5,
             total_reviews_today=10,

@@ -106,7 +106,8 @@ async def _format_project(
             webhook_last_event_at.isoformat() if webhook_last_event_at else None
         ),
         "recent_review_time": (
-            recent_review_dt.isoformat() if recent_review_dt
+            recent_review_dt.isoformat()
+            if recent_review_dt
             else (project.update_time.isoformat() if project.update_time else None)
         ),
         "pr_count": pr_count,
@@ -150,17 +151,18 @@ async def list_projects(
         stmt = stmt.where(ProjectModel.platform == platform)
     if search:
         stmt = stmt.where(
-            ProjectModel.name.ilike(f"%{search}%") |
-            ProjectModel.repo_url.ilike(f"%{search}%")
+            ProjectModel.name.ilike(f"%{search}%") | ProjectModel.repo_url.ilike(f"%{search}%")
         )
 
     total_result = await db.execute(stmt)
     all_matching = total_result.scalars().all()
     total = len(all_matching)
 
-    stmt = stmt.order_by(ProjectModel.create_time.desc()).offset(
-        (page - 1) * page_size
-    ).limit(page_size)
+    stmt = (
+        stmt.order_by(ProjectModel.create_time.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     rows = await db.execute(stmt)
     items = rows.scalars().all()
 
@@ -184,11 +186,19 @@ async def get_project(
 
     if project is None:
         return {
-            "id": project_id, "name": "", "platform": "", "repo_url": "",
-            "webhook_enabled": False, "webhook_status": "disconnected",
-            "webhook_last_event_at": None, "recent_review_time": None,
-            "pr_count": 0, "review_count": 0,
-            "latest_score": None, "status": "dormant", "active_days": None,
+            "id": project_id,
+            "name": "",
+            "platform": "",
+            "repo_url": "",
+            "webhook_enabled": False,
+            "webhook_status": "disconnected",
+            "webhook_last_event_at": None,
+            "recent_review_time": None,
+            "pr_count": 0,
+            "review_count": 0,
+            "latest_score": None,
+            "status": "dormant",
+            "active_days": None,
             "webhook_events": [],
         }
 

@@ -179,7 +179,9 @@ async def trigger_pr_review(
         pr_head_sha = pr_info.head_sha
         logger.info(
             "Fetched PR info: %s#%d head_sha=%s",
-            repo_name, pr_number, pr_head_sha,
+            repo_name,
+            pr_number,
+            pr_head_sha,
         )
     except Exception as exc:
         logger.warning("Failed to fetch PR info for %s#%d: %s", repo_name, pr_number, exc)
@@ -191,15 +193,19 @@ async def trigger_pr_review(
         pr_files = await git.get_commit_diff(repo_name, pr_head_sha)
         changed_files = [
             {
-                "filename": f.filename, "status": f.status,
-                "additions": f.additions, "deletions": f.deletions,
+                "filename": f.filename,
+                "status": f.status,
+                "additions": f.additions,
+                "deletions": f.deletions,
                 "patch": f.patch,
             }
             for f in pr_files
         ]
         logger.info(
             "Fetched %d changed files for PR #%d@%s",
-            len(changed_files), pr_number, pr_head_sha[:8],
+            len(changed_files),
+            pr_number,
+            pr_head_sha[:8],
         )
     except Exception as exc:
         logger.warning("Failed to fetch PR diff for %s#%d: %s", repo_name, pr_number, exc)
@@ -211,16 +217,22 @@ async def trigger_pr_review(
     # 4. 创建评审记录
     review_repo = ReviewRepo(db)
     review = await review_repo.create(
-        project_id=project_id, pr_number=pr_number,
-        pr_title=f"PR #{pr_number}", head_sha=pr_head_sha,
-        status=ReviewStatus.PENDING, task_id=None,
+        project_id=project_id,
+        pr_number=pr_number,
+        pr_title=f"PR #{pr_number}",
+        head_sha=pr_head_sha,
+        status=ReviewStatus.PENDING,
+        task_id=None,
     )
     logger.info("Review record created: id=%s pr=#%d", review.id, pr_number)
 
     # 5. 加入评审队列
     task_id = await enqueue_commit_review(
-        project_id=project_id, repo_name=repo_name,
-        sha=pr_head_sha, changed_files=changed_files, review_id=review.id,
+        project_id=project_id,
+        repo_name=repo_name,
+        sha=pr_head_sha,
+        changed_files=changed_files,
+        review_id=review.id,
     )
 
     if task_id:
@@ -229,7 +241,12 @@ async def trigger_pr_review(
 
     logger.info(
         "PR review enqueued: project=%s pr=#%d sha=%s task=%s review=%s files=%d",
-        project_id, pr_number, pr_head_sha[:8], task_id, review.id, len(changed_files),
+        project_id,
+        pr_number,
+        pr_head_sha[:8],
+        task_id,
+        review.id,
+        len(changed_files),
     )
 
     return {

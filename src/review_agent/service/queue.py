@@ -164,7 +164,9 @@ async def run_commit_review(
                     await db.commit()
                     logger.info(
                         "ReviewModel updated: id=%s status=completed score=%d findings=%d",
-                        review_id, result.score, len(result.findings),
+                        review_id,
+                        result.score,
+                        len(result.findings),
                     )
             except Exception:
                 logger.warning(

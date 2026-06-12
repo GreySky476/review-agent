@@ -31,9 +31,7 @@ class MockGitProvider:
     def __init__(self) -> None:
         self.files: dict[str, str] = {}
 
-    async def get_file_content(
-        self, _repo_name: str, file_path: str, _ref: str
-    ) -> str | None:
+    async def get_file_content(self, _repo_name: str, file_path: str, _ref: str) -> str | None:
         return self.files.get(file_path)
 
 
@@ -115,10 +113,15 @@ def unsafe_function(data):
         ai = MockAIProvider(findings_json=ai_response)
         service = CommitReviewService(git_provider=git, ai_provider=ai)  # type: ignore[arg-type]
 
-        files = [PRFile(
-            filename="app.py", status="added", additions=3, deletions=0,
-            patch="+def read_file...",
-        )]
+        files = [
+            PRFile(
+                filename="app.py",
+                status="added",
+                additions=3,
+                deletions=0,
+                patch="+def read_file...",
+            )
+        ]
         result = await service.review_commit("owner/repo", "abc123", files)
 
         assert len(result.findings) >= 1
@@ -217,13 +220,15 @@ def process(data):
         ai = MockAIProvider(findings_json="[]")
         service = CommitReviewService(git_provider=git, ai_provider=ai)  # type: ignore[arg-type]
 
-        files = [PRFile(
-            filename="process.py",
-            status="modified",
-            additions=3,
-            deletions=1,
-            patch="@@ -1,3 +1,3 @@\n-def old():\n+def process(data):",
-        )]
+        files = [
+            PRFile(
+                filename="process.py",
+                status="modified",
+                additions=3,
+                deletions=1,
+                patch="@@ -1,3 +1,3 @@\n-def old():\n+def process(data):",
+            )
+        ]
         result = await service.review_commit("owner/repo", "abc123", files)
 
         assert result.score >= 0

@@ -159,7 +159,9 @@ async def check_project_webhooks(session: object) -> None:
                         p.webhook_enabled = new_enabled  # type: ignore[attr-defined]
                         logger.info(
                             "Webhook health: %s → webhook_enabled=%s (was %s)",
-                            repo_name, new_enabled, old_enabled,
+                            repo_name,
+                            new_enabled,
+                            old_enabled,
                         )
                 except Exception as exc:
                     logger.debug("Webhook check skipped for %s: %s", repo_name, exc)
@@ -169,7 +171,8 @@ async def check_project_webhooks(session: object) -> None:
         changed = sum(1 for p in projects if p.webhook_enabled)  # type: ignore[attr-defined]
         logger.info(
             "Webhook health done: %d projects checked, %d connected",
-            len(projects), changed,
+            len(projects),
+            changed,
         )
     except Exception as exc:
         logger.error("Project webhook health check failed: %s", exc)
@@ -202,7 +205,8 @@ _periodic_task: asyncio.Task[None] | None = None
 
 
 async def _periodic_health_check(
-    platform_interval: int, webhook_interval: int,
+    platform_interval: int,
+    webhook_interval: int,
 ) -> None:
     """后台循环：定期执行平台 + Webhook 连通性检测。"""
     from review_agent.config.database import async_session_factory
@@ -244,5 +248,6 @@ def start_periodic_health_check(
     )
     logger.info(
         "Started periodic health check (platform=%dm webhook=%dm)",
-        interval_minutes, settings.webhook_health_interval_minutes,
+        interval_minutes,
+        settings.webhook_health_interval_minutes,
     )

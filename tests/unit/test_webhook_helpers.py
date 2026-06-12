@@ -137,6 +137,7 @@ class TestProjectRepoBranchSettings:
         assert result.get("review_branches") == ["main", "develop"]
         # 验证 settings 被更新为 JSON 字符串
         import json
+
         saved = json.loads(project.settings)
         assert saved.get("review_branches") == ["main", "develop"]
 

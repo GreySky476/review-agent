@@ -23,14 +23,17 @@ def _calc_duration(review: ReviewModel) -> int | None:
 
 
 async def _fetch_finding_breakdowns(
-    db: AsyncSession, review_ids: list[str],
+    db: AsyncSession,
+    review_ids: list[str],
 ) -> dict[str, dict[str, Any]]:
     """批量查询 findings 的严重性和类别分布。"""
     if not review_ids:
         return {}
     rows = await db.execute(
         select(
-            FindingModel.review_id, FindingModel.severity, FindingModel.category,
+            FindingModel.review_id,
+            FindingModel.severity,
+            FindingModel.category,
         ).where(FindingModel.review_id.in_(review_ids))
     )
     result: dict[str, dict[str, Any]] = {}
@@ -46,8 +49,9 @@ async def _fetch_finding_breakdowns(
 async def _fetch_file_summary(db: AsyncSession, review_id: str) -> list[dict[str, Any]]:
     """查询单个 review 的文件级统计。"""
     rows = await db.execute(
-        select(FindingModel.file_path, FindingModel.severity)
-        .where(FindingModel.review_id == review_id)
+        select(FindingModel.file_path, FindingModel.severity).where(
+            FindingModel.review_id == review_id
+        )
     )
     file_map: dict[str, Counter] = {}
     for r in rows.all():
@@ -56,7 +60,8 @@ async def _fetch_file_summary(db: AsyncSession, review_id: str) -> list[dict[str
         file_map[r.file_path][r.severity] += 1
     return [
         {
-            "file_path": path, "findings": sum(c.values()),
+            "file_path": path,
+            "findings": sum(c.values()),
             "critical": c.get("critical", 0),
             "warning": c.get("warning", 0),
             "info": c.get("info", 0),
@@ -67,7 +72,8 @@ async def _fetch_file_summary(db: AsyncSession, review_id: str) -> list[dict[str
 
 @router.get("/reviews/{review_id}")
 async def get_review_detail(
-    review_id: str, db: AsyncSession = Depends(get_session),
+    review_id: str,
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """获取评审详情（含 findings 和聚合统计）。"""
     row = await db.execute(
@@ -92,23 +98,34 @@ async def get_review_detail(
     for f in finding_rows.scalars().all():
         severity_counts[f.severity] += 1
         category_counts[f.category] += 1
-        findings.append({
-            "id": f.id, "file_path": f.file_path,
-            "line_start": f.line_start, "line_end": f.line_end,
-            "category": f.category, "severity": f.severity,
-            "title": f.title, "description": f.description,
-            "suggestion": f.suggestion, "rule_id": f.rule_id,
-            "is_valid": f.is_valid,
-        })
+        findings.append(
+            {
+                "id": f.id,
+                "file_path": f.file_path,
+                "line_start": f.line_start,
+                "line_end": f.line_end,
+                "category": f.category,
+                "severity": f.severity,
+                "title": f.title,
+                "description": f.description,
+                "suggestion": f.suggestion,
+                "rule_id": f.rule_id,
+                "is_valid": f.is_valid,
+            }
+        )
 
     file_summary = await _fetch_file_summary(db, review_id)
 
     return {
-        "id": review.id, "project_id": review.project_id,
+        "id": review.id,
+        "project_id": review.project_id,
         "project_name": project_name,
-        "pr_number": review.pr_number, "pr_title": review.pr_title,
-        "head_sha": review.head_sha, "status": review.status,
-        "score": review.score, "findings_count": len(findings),
+        "pr_number": review.pr_number,
+        "pr_title": review.pr_title,
+        "head_sha": review.head_sha,
+        "status": review.status,
+        "score": review.score,
+        "findings_count": len(findings),
         "create_time": review.create_time.isoformat() if review.create_time else None,
         "update_time": review.update_time.isoformat() if review.update_time else None,
         "task_id": review.task_id,
@@ -128,8 +145,9 @@ async def get_review_stats(
 ) -> dict[str, Any]:
     """评审全局统计。"""
     count_result = await db.execute(
-        select(func.count(), func.avg(ReviewModel.score))
-        .where(ReviewModel.is_deleted.is_(False), ReviewModel.status == "completed")
+        select(func.count(), func.avg(ReviewModel.score)).where(
+            ReviewModel.is_deleted.is_(False), ReviewModel.status == "completed"
+        )
     )
     total_count, avg_score = count_result.one()
     avg_score = round(float(avg_score), 1) if avg_score else 0

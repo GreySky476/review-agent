@@ -192,8 +192,11 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
                         "last_response": None,
                     }
             return {
-                "found": False, "hook_id": None, "active": None,
-                "events": [], "last_response": None,
+                "found": False,
+                "hook_id": None,
+                "active": None,
+                "events": [],
+                "last_response": None,
             }
         except Exception as exc:
             logger.warning("Failed to check webhook for %s: %s", repo_name, exc)
@@ -202,8 +205,11 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
                 error_message=f"Failed to check webhook for {repo_name}: {exc}",
             )
             return {
-                "found": False, "hook_id": None, "active": None,
-                "events": [], "last_response": str(exc),
+                "found": False,
+                "hook_id": None,
+                "active": None,
+                "events": [],
+                "last_response": str(exc),
             }
 
     async def send_webhook_ping(self, repo_name: str, hook_id: int) -> bool:

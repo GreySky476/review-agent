@@ -85,7 +85,9 @@ async def fetch_and_chunk(
 
     logger.info(
         "fetch_and_chunk: %d files → %d chunks, %d unreviewed",
-        len(sources), len(chunks), len(unreviewed),
+        len(sources),
+        len(chunks),
+        len(unreviewed),
     )
     return {"chunks": chunks, "source_codes": sources, "unreviewed_files": unreviewed}
 
@@ -113,9 +115,8 @@ async def aggregate_findings(state: ReviewState) -> dict[str, Any]:
         penalty = int(fail_ratio * 40)
         score = max(0, score - penalty)
 
-        error_msg = (
-            f"{len(unreviewed)}/{total_files} 个文件无法获取源码："
-            + ", ".join(unreviewed[:5])
+        error_msg = f"{len(unreviewed)}/{total_files} 个文件无法获取源码：" + ", ".join(
+            unreviewed[:5]
         )
         if len(unreviewed) > 5:
             error_msg += f" 等 {len(unreviewed)} 个"
@@ -148,16 +149,13 @@ async def generate_summary(state: ReviewState) -> dict[str, Any]:
 
     publisher = Publisher()
     summary = publisher.generate_summary(
-        deduped, score,
+        deduped,
+        score,
         unreviewed_count=len(unreviewed),
     )
 
     # 根据是否有失败文件决定最终状态
-    status = (
-        ReviewStatus.COMPLETED_WITH_ERRORS
-        if unreviewed
-        else ReviewStatus.COMPLETED
-    )
+    status = ReviewStatus.COMPLETED_WITH_ERRORS if unreviewed else ReviewStatus.COMPLETED
 
     logger.info(
         "generate_summary: score=%d, findings=%d, status=%s, unreviewed=%d",
@@ -201,8 +199,7 @@ async def publish_results(
             await log_error(
                 error_type="publish_failed",
                 error_message=(
-                    f"publish_results: failed to publish for "
-                    f"{state['repo_name']}@{state['sha']}"
+                    f"publish_results: failed to publish for {state['repo_name']}@{state['sha']}"
                 ),
             )
 

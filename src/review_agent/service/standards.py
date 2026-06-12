@@ -46,8 +46,7 @@ LANGUAGE_DOC_MAP: dict[str, str] = {
 }
 
 _STANDARDS_DIR = (
-    Path(__file__).resolve().parent.parent.parent.parent
-    / "docs/coding/language-standards"
+    Path(__file__).resolve().parent.parent.parent.parent / "docs/coding/language-standards"
 )
 _CACHE: dict[str, str] = {}
 

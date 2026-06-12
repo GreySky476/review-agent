@@ -9,7 +9,6 @@ from review_agent.service.dimensions.base import DimensionFinding
 from review_agent.service.git.base import PRFile
 from review_agent.types.enums import ReviewStatus
 
-
 _T = Any
 
 

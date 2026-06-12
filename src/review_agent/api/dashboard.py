@@ -51,9 +51,11 @@ async def dashboard_stats(
     pending_errors = pending_result.scalar() or 0
 
     find_dist_result = await db.execute(
-        select(FindingModel.category, func.count(FindingModel.id)).where(
+        select(FindingModel.category, func.count(FindingModel.id))
+        .where(
             FindingModel.is_deleted.is_(False),
-        ).group_by(FindingModel.category)
+        )
+        .group_by(FindingModel.category)
     )
     finding_distribution: dict[str, int] = {}
     for row in find_dist_result.all():
@@ -142,21 +144,25 @@ async def enterprise_dashboard(
 
     # 本周 vs 上周按状态分组
     status_rows = await db.execute(
-        select(ReviewModel.status, func.count(ReviewModel.id)).where(
+        select(ReviewModel.status, func.count(ReviewModel.id))
+        .where(
             ReviewModel.create_time >= week_ago,
             ReviewModel.is_deleted.is_(False),
-        ).group_by(ReviewModel.status)
+        )
+        .group_by(ReviewModel.status)
     )
     reviews_by_status: dict[str, int] = {}
     for row in status_rows.all():
         reviews_by_status[row[0]] = row[1]
 
     last_week_status_rows = await db.execute(
-        select(ReviewModel.status, func.count(ReviewModel.id)).where(
+        select(ReviewModel.status, func.count(ReviewModel.id))
+        .where(
             ReviewModel.create_time >= two_weeks_ago,
             ReviewModel.create_time < week_ago,
             ReviewModel.is_deleted.is_(False),
-        ).group_by(ReviewModel.status)
+        )
+        .group_by(ReviewModel.status)
     )
     reviews_last_week_by_status: dict[str, int] = {}
     for row in last_week_status_rows.all():
@@ -183,17 +189,15 @@ async def enterprise_dashboard(
     avg_score_last = float(avg_last_row.scalar() or 0.0)
 
     # 异常率
-    total_completed = (
-        reviews_by_status.get("completed", 0)
-        + reviews_by_status.get("completed_with_errors", 0)
+    total_completed = reviews_by_status.get("completed", 0) + reviews_by_status.get(
+        "completed_with_errors", 0
     )
     total_with_errors = reviews_by_status.get("completed_with_errors", 0)
     error_rate = (total_with_errors / max(total_completed, 1)) * 100
 
-    last_total_completed = (
-        reviews_last_week_by_status.get("completed", 0)
-        + reviews_last_week_by_status.get("completed_with_errors", 0)
-    )
+    last_total_completed = reviews_last_week_by_status.get(
+        "completed", 0
+    ) + reviews_last_week_by_status.get("completed_with_errors", 0)
     last_with_errors = reviews_last_week_by_status.get("completed_with_errors", 0)
     error_rate_last = (last_with_errors / max(last_total_completed, 1)) * 100
 
@@ -210,10 +214,7 @@ async def enterprise_dashboard(
         .order_by(func.count(FindingModel.id).desc())
         .limit(5)
     )
-    top_findings = [
-        {"category": row[0], "count": row[1]}
-        for row in top_findings_rows.all()
-    ]
+    top_findings = [{"category": row[0], "count": row[1]} for row in top_findings_rows.all()]
 
     # 平台健康
     health_repo = PlatformHealthRepo(db)
@@ -318,17 +319,19 @@ async def project_health(
         if latest_score is not None and old_score is not None:
             score_change = latest_score - old_score
 
-        items.append({
-            "project_id": p.id,
-            "project_name": p.name,
-            "platform": p.platform,
-            "latest_score": latest_score,
-            "score_change": score_change,
-            "health": health,
-            "review_count_7d": review_count_7d,
-            "error_count_7d": error_count_7d,
-            "last_review_at": last_review_at,
-        })
+        items.append(
+            {
+                "project_id": p.id,
+                "project_name": p.name,
+                "platform": p.platform,
+                "latest_score": latest_score,
+                "score_change": score_change,
+                "health": health,
+                "review_count_7d": review_count_7d,
+                "error_count_7d": error_count_7d,
+                "last_review_at": last_review_at,
+            }
+        )
 
     # 按健康状态排序：critical → warning → active → dormant
     health_order = {"critical": 0, "warning": 1, "active": 2, "dormant": 3}
@@ -367,17 +370,19 @@ async def recent_reviews(
         duration: int | None = None
         if row.create_time and row.update_time:
             duration = int((row.update_time - row.create_time).total_seconds())
-        items.append({
-            "review_id": row.id,
-            "project_name": row.project_name,
-            "project_id": row.project_id,
-            "pr_title": row.pr_title,
-            "branch": row.branch,
-            "status": row.status,
-            "score": row.score,
-            "head_sha": row.head_sha[:8] if row.head_sha else "",
-            "duration_seconds": duration,
-            "created_at": row.create_time.isoformat() if row.create_time else None,
-        })
+        items.append(
+            {
+                "review_id": row.id,
+                "project_name": row.project_name,
+                "project_id": row.project_id,
+                "pr_title": row.pr_title,
+                "branch": row.branch,
+                "status": row.status,
+                "score": row.score,
+                "head_sha": row.head_sha[:8] if row.head_sha else "",
+                "duration_seconds": duration,
+                "created_at": row.create_time.isoformat() if row.create_time else None,
+            }
+        )
 
     return {"items": items}

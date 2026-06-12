@@ -62,8 +62,12 @@ async def ensure_project_connected(
         logger.info("Marked project %s webhook as connected", project.id)
     event_repo = WebhookEventRepo(db)
     await event_repo.create_from_payload(
-        project_id=project.id, platform=platform.value, event_id=event_id,
-        action=action, pr_number=pr_number, raw_payload=raw_payload,
+        project_id=project.id,
+        platform=platform.value,
+        event_id=event_id,
+        action=action,
+        pr_number=pr_number,
+        raw_payload=raw_payload,
     )
     return project.id  # type: ignore[no-any-return]
 
@@ -100,7 +104,9 @@ async def handle_push_event(
     if not any(fnmatch.fnmatch(branch, pattern) for pattern in allowed):
         logger.info(
             "Skipped push review: branch='%s' not in review list %s (project=%s)",
-            branch, allowed, project.id,
+            branch,
+            allowed,
+            project.id,
         )
         return {"status": "skipped", "reason": "branch_not_matched", "branch": branch}
 
@@ -122,26 +128,38 @@ async def handle_push_event(
         logger.info("Updated existing commit record: %s (resetting is_reviewed)", sha)
     else:
         await commit_repo.create(
-            project_id=project.id, sha=sha,
+            project_id=project.id,
+            sha=sha,
             author=head_commit.get("author", {}).get("name"),
-            message=head_commit.get("message", ""), branch=branch, is_reviewed=False,
+            message=head_commit.get("message", ""),
+            branch=branch,
+            is_reviewed=False,
         )
     review_repo = ReviewRepo(db)
     review = await review_repo.create(
-        project_id=project.id, pr_number=None,
-        pr_title=f"Push {branch}: {sha[:8]}", head_sha=sha,
-        status=ReviewStatus.PENDING, task_id=None,
+        project_id=project.id,
+        pr_number=None,
+        pr_title=f"Push {branch}: {sha[:8]}",
+        head_sha=sha,
+        status=ReviewStatus.PENDING,
+        task_id=None,
     )
     task_id = await enqueue_commit_review(
-        project_id=project.id, repo_name=repo_full_name, sha=sha,
-        changed_files=changed_files, review_id=review.id,
+        project_id=project.id,
+        repo_name=repo_full_name,
+        sha=sha,
+        changed_files=changed_files,
+        review_id=review.id,
     )
     if task_id:
         review.task_id = task_id
         await db.flush()
     logger.info(
         "Enqueued commit review: %s@%s task=%s files=%d",
-        repo_full_name, sha, task_id, len(changed_files),
+        repo_full_name,
+        sha,
+        task_id,
+        len(changed_files),
     )
     return {"status": "accepted", "sha": sha, "task_id": task_id or ""}
 
@@ -163,19 +181,26 @@ async def trigger_pr_review(
         pr_files = await git.get_commit_diff(repo_full_name, pr_head_sha)
         changed_files = [
             {
-                "filename": f.filename, "status": f.status,
-                "additions": f.additions, "deletions": f.deletions,
+                "filename": f.filename,
+                "status": f.status,
+                "additions": f.additions,
+                "deletions": f.deletions,
                 "patch": f.patch,
             }
             for f in pr_files
         ]
         logger.info(
             "Fetched %d changed files for PR #%d@%s",
-            len(changed_files), pr_number, pr_head_sha[:8],
+            len(changed_files),
+            pr_number,
+            pr_head_sha[:8],
         )
     except Exception as exc:
         logger.warning(
-            "Failed to fetch PR #%d diff for %s: %s", pr_number, repo_full_name, exc,
+            "Failed to fetch PR #%d diff for %s: %s",
+            pr_number,
+            repo_full_name,
+            exc,
         )
         await log_error(
             error_type="git_api_failed",
@@ -186,26 +211,38 @@ async def trigger_pr_review(
         return
     review_repo = ReviewRepo(db)
     review = await review_repo.create(
-        project_id=project_id, pr_number=pr_number,
-        pr_title=f"PR #{pr_number}", head_sha=pr_head_sha,
-        status=ReviewStatus.PENDING, task_id=None,
+        project_id=project_id,
+        pr_number=pr_number,
+        pr_title=f"PR #{pr_number}",
+        head_sha=pr_head_sha,
+        status=ReviewStatus.PENDING,
+        task_id=None,
     )
     task_id = await enqueue_commit_review(
-        project_id=project_id, repo_name=repo_full_name,
-        sha=pr_head_sha, changed_files=changed_files, review_id=review.id,
+        project_id=project_id,
+        repo_name=repo_full_name,
+        sha=pr_head_sha,
+        changed_files=changed_files,
+        review_id=review.id,
     )
     if task_id:
         review.task_id = task_id
         await db.flush()
     logger.info(
         "PR review triggered: project=%s pr=#%d sha=%s review=%s",
-        project_id, pr_number, pr_head_sha[:8], review.id,
+        project_id,
+        pr_number,
+        pr_head_sha[:8],
+        review.id,
     )
 
 
 async def sync_pull_request(
-    db: AsyncSession, project_id: str, platform: Platform,
-    pr_data: dict[str, Any], _action: str,
+    db: AsyncSession,
+    project_id: str,
+    platform: Platform,
+    pr_data: dict[str, Any],
+    _action: str,
 ) -> None:
     """将 PR 数据同步到 PullRequestModel。"""
     pr_number = pr_data.get("number")
@@ -219,12 +256,16 @@ async def sync_pull_request(
         with contextlib.suppress(ValueError, TypeError):
             merged_at = datetime.fromisoformat(merged_at_str.replace("Z", "+00:00"))
     await repo.upsert(
-        project_id=project_id, pr_number=pr_number, title=pr_data.get("title", ""),
+        project_id=project_id,
+        pr_number=pr_number,
+        title=pr_data.get("title", ""),
         author=pr_data.get("user", {}).get("login"),
         source_branch=pr_data.get("head", {}).get("ref"),
         target_branch=pr_data.get("base", {}).get("ref"),
-        state=state, is_merged=bool(pr_data.get("merged")),
-        merged_at=merged_at, merge_sha=pr_data.get("merge_commit_sha"),
+        state=state,
+        is_merged=bool(pr_data.get("merged")),
+        merged_at=merged_at,
+        merge_sha=pr_data.get("merge_commit_sha"),
         platform=platform.value,
     )
     logger.info("Synced PR #%d (%s) for project %s", pr_number, state, project_id)
@@ -233,7 +274,9 @@ async def sync_pull_request(
 def verify_github_signature(payload: bytes, signature: str, secret: str) -> bool:
     """验证 GitHub Webhook 签名。"""
     expected = hmac.new(
-        secret.encode("utf-8"), msg=payload, digestmod=hashlib.sha256,
+        secret.encode("utf-8"),
+        msg=payload,
+        digestmod=hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(f"sha256={expected}", signature)
 

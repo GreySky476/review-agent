@@ -118,7 +118,4 @@ async def error_trend(
         .order_by(func.date(ReviewErrorLog.create_time))
     )
     result = await db.execute(stmt)
-    return [
-        {"date": str(row.date), "count": row.count}
-        for row in result.all()
-    ]
+    return [{"date": str(row.date), "count": row.count} for row in result.all()]

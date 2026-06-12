@@ -74,10 +74,12 @@ def create_app() -> FastAPI:
     )
 
     _register_exception_handlers(app)
+
     # healthz 保持在根路径（用于负载均衡存活检查）
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(webhook_router, prefix="/webhook")
     app.include_router(dashboard_router, prefix="/api/v1")

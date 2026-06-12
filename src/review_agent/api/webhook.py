@@ -52,7 +52,8 @@ async def github_webhook(
 
     logger.info(
         "GitHub webhook received: event=%s delivery=%s",
-        x_github_event, event_id,
+        x_github_event,
+        event_id,
     )
 
     if x_github_event == "ping":
@@ -93,7 +94,9 @@ async def github_webhook(
             if pr_base_ref and not any(fnmatch.fnmatch(pr_base_ref, p) for p in allowed):
                 logger.info(
                     "Skipped PR review: target_branch='%s' not in review list %s (project=%s)",
-                    pr_base_ref, allowed, project_id,
+                    pr_base_ref,
+                    allowed,
+                    project_id,
                 )
                 return {"status": "skipped", "reason": "branch_not_matched"}
 
