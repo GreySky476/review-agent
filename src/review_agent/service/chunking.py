@@ -30,6 +30,24 @@ class CodeChunk:
     path: ChunkPath
 
 
+def adjust_line_number(chunk: CodeChunk, ai_line: int | None) -> int | None:
+    """将 AI 返回的相对于函数源码的行号转换为文件绝对行号。
+
+    AI 收到的 prompt 中函数源码起始于行 1，而文件中该函数起始于
+    chunk.start_line。此函数将相对行号转换为绝对行号。
+
+    Args:
+        chunk: 对应的代码分块。
+        ai_line: AI 返回的行号（相对于函数源码），可能为 None。
+
+    Returns:
+        文件中的绝对行号，输入为 None 时返回 None。
+    """
+    if ai_line is None:
+        return None
+    return chunk.start_line + ai_line - 1
+
+
 def _estimate_tokens(text: str) -> int:
     """估算 Token 数（中英文混合约 3 字符/token）。"""
     return max(1, len(text) // 3)

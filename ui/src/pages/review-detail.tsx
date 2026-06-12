@@ -76,7 +76,7 @@ export function ReviewDetailPage() {
   }
 
   const pr = data?.pull_request ?? {}
-  const score = pr.review_score
+  const score = data?.reviews?.[0]?.score
   const hasReview = (data?.reviews?.length ?? 0) > 0
 
   const { mutate: triggerReview, isPending: isTriggering } = useTriggerPRReview(

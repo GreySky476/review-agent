@@ -23,7 +23,7 @@ from typing import Any
 from review_agent.config.settings import get_settings
 from review_agent.service.ai.base import AIProvider
 from review_agent.service.ai.types import AICompletionRequest, AIMessage
-from review_agent.service.chunking import CodeChunk, chunk_file
+from review_agent.service.chunking import CodeChunk, adjust_line_number, chunk_file
 from review_agent.service.dimensions.base import (
     DimensionFinding,
     review_bug_risk,
@@ -156,8 +156,7 @@ class CommitReviewService:
             await log_error(
                 error_type="git_file_fetch_failed",
                 error_message=(
-                    f"Failed to fetch content for review: "
-                    f"{repo_name}@{sha}:{pr_file.filename}"
+                    f"Failed to fetch content for review: {repo_name}@{sha}:{pr_file.filename}"
                 ),
             )
             return []
@@ -309,8 +308,7 @@ class CommitReviewService:
             await log_error(
                 error_type="ai_call_failed",
                 error_message=(
-                    f"AI review failed for "
-                    f"{chunk.file_path}:{chunk.function_name}: {exc}"
+                    f"AI review failed for {chunk.file_path}:{chunk.function_name}: {exc}"
                 ),
             )
             return []
@@ -386,7 +384,7 @@ class CommitReviewService:
                     description=item.get("description", ""),
                     suggestion=item.get("suggestion", ""),
                     file_path=chunk.file_path,
-                    line_start=item.get("line"),
+                    line_start=adjust_line_number(chunk, item.get("line")),
                 )
             )
 

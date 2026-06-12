@@ -14,7 +14,7 @@ from typing import Any
 from review_agent.config.settings import get_settings
 from review_agent.service.ai.base import AIProvider
 from review_agent.service.ai.types import AICompletionRequest, AIMessage
-from review_agent.service.chunking import CodeChunk
+from review_agent.service.chunking import CodeChunk, adjust_line_number
 from review_agent.service.dimensions.base import (
     DimensionFinding,
     review_bug_risk,
@@ -277,7 +277,7 @@ def _parse_ai_response(content: str, chunk: CodeChunk) -> list[DimensionFinding]
                 description=item.get("description", ""),
                 suggestion=item.get("suggestion", ""),
                 file_path=chunk.file_path,
-                line_start=item.get("line"),
+                line_start=adjust_line_number(chunk, item.get("line")),
             )
         )
     return findings
