@@ -20,6 +20,11 @@ export function ReviewDetailPage() {
     Number(prNumber),
   )
 
+  const { mutate: triggerReview, isPending: isTriggering } = useTriggerPRReview(
+    id!,
+    Number(prNumber),
+  )
+
   const findings: any[] = data?.findings ?? []
 
   // Build file tree data
@@ -79,11 +84,6 @@ export function ReviewDetailPage() {
   const score = data?.reviews?.[0]?.score
   const hasReview = (data?.reviews?.length ?? 0) > 0
 
-  const { mutate: triggerReview, isPending: isTriggering } = useTriggerPRReview(
-    id!,
-    Number(prNumber),
-  )
-
   return (
     <div className="space-y-6">
       {/* Back + Header */}
@@ -118,9 +118,18 @@ export function ReviewDetailPage() {
               <span>{findings.length} 个 Finding</span>
             </div>
           </div>
-          <Button variant="secondary" size="sm" onClick={() => setShowComments(!showComments)}>
-            💬 评论 ({data?.comments?.length ?? 0})
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setShowComments(!showComments)}>
+              💬 评论 ({data?.comments?.length ?? 0})
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => window.open(`/api/v1/projects/${id}/pull-requests/${prNumber}/export/md`)}
+            >
+              📥 导出 MD
+            </Button>
+          </div>
         </div>
       </div>
 

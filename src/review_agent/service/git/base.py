@@ -100,6 +100,20 @@ class GitProvider(ABC):
         ...
 
     @abstractmethod
+    async def get_compare_diff(self, repo_name: str, base_sha: str, head_sha: str) -> list[PRFile]:
+        """获取两个 SHA 之间的差异文件列表（用于增量比较）。
+
+        Args:
+            repo_name: 仓库全名。
+            base_sha: 起始 SHA（上次已评的 commit）。
+            head_sha: 目标 SHA（当前 head commit）。
+
+        Returns:
+            变更文件列表。
+        """
+        ...
+
+    @abstractmethod
     async def publish_commit_summary(self, repo_name: str, sha: str, summary: str) -> None:
         """在提交上发布摘要评论。
 

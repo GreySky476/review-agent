@@ -29,6 +29,11 @@ class CodeChunk:
     estimated_tokens: int
     path: ChunkPath
 
+    @property
+    def prompt_text(self) -> str:
+        """用于嵌入检索的简化文本。"""
+        return f"{self.file_path}:{self.function_name or '?'}\n{self.source_code[:500]}"
+
 
 def adjust_line_number(chunk: CodeChunk, ai_line: int | None) -> int | None:
     """将 AI 返回的相对于函数源码的行号转换为文件绝对行号。

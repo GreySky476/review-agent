@@ -210,11 +210,14 @@ FastAPI 启动 → lifespan
 
 ### 4.4 Webhook 连通性验证
 
-| 方式 | 端点 | 说明 |
-|------|------|------|
+| 方式 | 端点/来源 | 说明 |
+|------|----------|------|
 | GitHub Ping | `POST /api/webhook/github` (自动) | GitHub 创建/重发 webhook 时自动触发 |
 | Gitee Test Hook | `POST /api/webhook/gitee` (自动) | Gitee 测试事件 |
 | 手动验证 | `GET /api/webhook/health` | curl/浏览器直接访问验证服务在线 |
+| **主动巡检（权威来源）** | `service/health.py:check_project_webhooks` | **每 5 分钟通过 GitHub API 验证 webhook 配置，更新 `project.webhook_enabled` — 这是 webhook 状态的权威来源** |
+
+> **状态判定规则**：项目 webhook 状态仅由 `project.webhook_enabled` 决定（由主动巡检维护），`webhook_events` 表是被动事件日志，仅用于审计和调试，不参与状态判定。详见 [模块边界 → 状态判定与数据源规则](module-boundaries.md#六状态判定与数据源规则)。
 
 ### 4.5 代码分块策略
 

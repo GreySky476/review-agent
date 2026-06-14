@@ -125,6 +125,8 @@ class Rule(BaseModel):
     is_deleted: bool = False
     create_time: datetime | None = None
     update_time: datetime | None = None
+    embedding_status: bool = False
+    project_id: str | None = None
 
 
 # ── User（管理后台用户） ──────────────────────────────

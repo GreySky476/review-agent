@@ -10,11 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from review_agent.config.database import get_session
+from review_agent.repo.finding import FindingRepo
 from review_agent.repo.project import ProjectRepo
 from review_agent.repo.pull_request import PullRequestRepo
 from review_agent.repo.review import ReviewRepo
 from review_agent.service.git.github_provider import GitHubProvider
-from review_agent.service.queue import enqueue_commit_review
+from review_agent.service.queue import enqueue_pr_review
 from review_agent.types.enums import ReviewStatus
 from review_agent.types.orm import FindingModel
 
@@ -187,11 +188,11 @@ async def trigger_pr_review(
         logger.warning("Failed to fetch PR info for %s#%d: %s", repo_name, pr_number, exc)
         return {"status": "rejected", "reason": f"github_api_failed: {exc}"}
 
-    # 3. 获取变更文件
-    changed_files: list[dict[str, Any]] = []
+    # 3. 获取变更文件（全量 diff）
+    all_files: list[dict[str, Any]] = []
     try:
-        pr_files = await git.get_commit_diff(repo_name, pr_head_sha)
-        changed_files = [
+        pr_files = await git.get_pr_diff(repo_name, pr_number)
+        all_files = [
             {
                 "filename": f.filename,
                 "status": f.status,
@@ -202,17 +203,31 @@ async def trigger_pr_review(
             for f in pr_files
         ]
         logger.info(
-            "Fetched %d changed files for PR #%d@%s",
-            len(changed_files),
+            "Fetched PR diff for #%d: %d files (sha=%s)",
             pr_number,
+            len(all_files),
             pr_head_sha[:8],
         )
     except Exception as exc:
         logger.warning("Failed to fetch PR diff for %s#%d: %s", repo_name, pr_number, exc)
 
-    if not changed_files:
+    if not all_files:
         logger.warning("No changed files for PR #%d@%s", pr_number, repo_name)
         return {"status": "accepted", "task_id": None, "reason": "no_changed_files"}
+
+    # 增量上下文：查询上次评审
+    previous_review_id: str | None = None
+    last_reviewed_sha: str | None = None
+    previous_file_paths: list[str] = []
+    try:
+        prev_review = await ReviewRepo(db).get_latest_completed_by_pr(project_id, pr_number)
+        if prev_review:
+            previous_review_id = prev_review.id
+            last_reviewed_sha = prev_review.head_sha
+            prev_findings = await FindingRepo(db).list_by_review(prev_review.id)
+            previous_file_paths = list({f.file_path for f in prev_findings})
+    except Exception:
+        logger.debug("Failed to load previous review context: %s", exc_info=True)
 
     # 4. 创建评审记录
     review_repo = ReviewRepo(db)
@@ -226,13 +241,17 @@ async def trigger_pr_review(
     )
     logger.info("Review record created: id=%s pr=#%d", review.id, pr_number)
 
-    # 5. 加入评审队列
-    task_id = await enqueue_commit_review(
+    # 5. 加入评审队列（PR 增量通道）
+    task_id = await enqueue_pr_review(
         project_id=project_id,
         repo_name=repo_name,
         sha=pr_head_sha,
-        changed_files=changed_files,
+        pr_number=pr_number,
+        all_files=all_files,
         review_id=review.id,
+        previous_review_id=previous_review_id,
+        last_reviewed_sha=last_reviewed_sha,
+        previous_file_paths=previous_file_paths,
     )
 
     if task_id:
@@ -240,20 +259,17 @@ async def trigger_pr_review(
         await db.flush()
 
     logger.info(
-        "PR review enqueued: project=%s pr=#%d sha=%s task=%s review=%s files=%d",
-        project_id,
-        pr_number,
-        pr_head_sha[:8],
-        task_id,
-        review.id,
-        len(changed_files),
+        "PR review enqueued: project=%s pr=#%d sha=%s task=%s review=%s files=%d"
+        " incremental=%s",
+        project_id, pr_number, pr_head_sha[:8], task_id, review.id, len(all_files),
+        bool(previous_review_id),
     )
 
     return {
         "status": "accepted",
         "task_id": task_id or "",
         "review_id": review.id,
-        "files_count": len(changed_files),
+        "files_count": len(all_files),
     }
 
 

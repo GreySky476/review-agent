@@ -1,15 +1,30 @@
 {
   "model": "deepseek-v4-flash",
   "hooks": {
-    "PreToolUse": {
-      "command": "bash ./.claude/hooks/before-command.sh"
-    }
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/before-command.sh",
+            "args": []
+          },
+          {
+            "type": "command",
+            "if": "Bash(git commit*)",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/pre-commit.sh",
+            "args": []
+          }
+        ]
+      }
+    ]
   },
   "skills": [
     {
       "name": "review-code",
       "description": "对当前变更运行 AI 代码评审，遵循项目的多维评审流水线规范",
-      "prompt": "你正在对代码变更进行 AI 评审。请严格遵循项目设计规范中的评审流水线（4.2 节）：\n\n1. **上下文获取**：读取 git diff，对每个被修改的函数获取完整源代码上下文\n2. **代码分块**：按函数/方法分块，预估 Token 数，区分正常块(≤1500)、边界块(1500-2000)、超大块(>2000)\n3. **分路径处理**：\n   - 正常块 & 边界块：并行检查五个维度\n     - 安全漏洞（注入、XSS、权限、敏感信息泄露、不安全反序列化）\n     - Bug 风险（空指针、逻辑错误、资源未释放、竞态条件）\n     - 性能与边界（N+1 查询、无限循环、不合理递归、异常未处理）\n     - 代码规范（命名、函数长度、圈复杂度、SOLID 原则）\n     - 依赖安全（已知 CVE）\n   - 超大块：结构评审（圈复杂度、行数、参数数、嵌套层级）+ 最小化安全检查\n4. **结果聚合**：每个 Finding 包含 位置、类别、严重性(critical/warning/info)、描述、建议\n5. **输出格式**：使用 Markdown 表格列出 Findings，末尾给出总分和采纳建议\n\n注意：编码前先读取 CLAUDE.md 和 docs/project-design.md 中与评审相关的部分。"
+      "prompt": "你正在对代码变更进行 AI 评审。请严格遵循项目设计规范中的评审流水线（4.2 节）：\n\n1. **上下文获取**：读取 git diff，对每个被修改的函数获取完整源代码上下文\n2. **代码分块**：按函数/方法分块，预估 Token 数，区分正常块(≤1500)、边界块(1500-2000)、超大块(>2000)\n3. **分路径处理**：\n   - 正常块 & 边界块：并行检查五个维度\n     - 安全漏洞（注入、XSS、权限、敏感信息泄露、不安全反序列化）\n     - Bug 风险（空指针、逻辑错误、资源未释放、竞态条件）\n     - 性能与边界（N+1 查询、无限循环、不合理递归、异常未处理）\n     - 代码规范（命名、函数长度、圈复杂度、SOLID 原则）\n     - 依赖安全（已知 CVE）\n     - 数据源选择：状态字段是否从日志/事件表推导？如果是，标记审查是否符合单一权威数据源原则（见 docs/architecture/module-boundaries.md#六状态判定与数据源规则）\n   - 超大块：结构评审（圈复杂度、行数、参数数、嵌套层级）+ 最小化安全检查\n4. **结果聚合**：每个 Finding 包含 位置、类别、严重性(critical/warning/info)、描述、建议\n5. **输出格式**：使用 Markdown 表格列出 Findings，末尾给出总分和采纳建议\n\n注意：编码前先读取 CLAUDE.md 和 docs/project-design.md 中与评审相关的部分。"
     },
     {
       "name": "add-feature",
@@ -34,7 +49,7 @@
     {
       "name": "design",
       "description": "创建架构决策记录 (ADR) 或功能设计文档",
-      "prompt": "你正在编写架构决策记录 (ADR) 或功能设计文档。\n\nADR 模板（docs/adr/YYYY-MM-DD-title.md）：\n```markdown\n# ADR-NNN: 决策标题\n\n## 状态\n[提议中 | 已接受 | 已弃用 | 已取代]\n\n## 背景\n为什么要做这个决策？上下文是什么？\n\n## 选项\n列出并简要评估每个候选方案。\n\n## 决策\n选择了哪个方案？为什么？\n\n## 后果\n这个决策带来的正面和负面影响。\n\n## 关联\n- 关联 ADR: [链接]\n- 关联 Issue: [链接]\n```\n\n约束：\n- 每个 ADR 独立文件，放入 docs/adr/\n- 文件名格式：YYYY-MM-DD-short-kebab-name.md\n- 编号顺序递增\n- 被取代的 ADR 更新状态为\"已取代\"并链接到新 ADR"
+      "prompt": "你正在编写架构决策记录 (ADR) 或功能设计文档。\n\nADR 模板（docs/adr/YYYY-MM-DD-title.md）：\n```markdown\n# ADR-NNN: 决策标题\n\n## 状态\n[提议中 | 已接受 | 已弃用 | 已取代]\n\n## 背景\n为什么要做这个决策？上下文是什么？\n\n## 选项\n列出并简要评估每个候选方案。\n\n## 决策\n选择了哪个方案？为什么？\n\n## 后果\n这个决策带来的正面和负面影响。\n\n## 关联\n- 关联 ADR: [链接]\n- 关联 Issue: [链接]\n```\n\n约束：\n- 每个 ADR 独立文件，放入 docs/adr/\n- 文件名格式：YYYY-MM-DD-short-kebab-name.md\n- 编号顺序递增\n- 被取代的 ADR 更新状态为\"已取代\"并链接到新 ADR\n- 当设计状态/健康检查端点时：明确每个状态字段的权威数据源；确认状态不是从被动日志表推导的；确认测试/验证端点没有补偿其他代码路径缺陷的副作用。详见 docs/architecture/module-boundaries.md#六状态判定与数据源规则 和 docs/reflections/"
     },
     {
       "name": "db",

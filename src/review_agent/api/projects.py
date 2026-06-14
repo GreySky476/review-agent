@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -24,7 +24,6 @@ from review_agent.types.orm import ProjectModel
 
 router = APIRouter(tags=["projects"])
 
-_WEBHOOK_INACTIVE_HOURS = 24
 
 # UUID 正则：xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 _UUID_PATTERN = re.compile(
@@ -60,15 +59,7 @@ async def _format_project(
     db: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """统一格式化项目响应。"""
-    webhook_enabled = project.webhook_enabled
-    if not webhook_enabled:
-        webhook_status = "disconnected"
-    elif webhook_last_event_at is None:
-        webhook_status = "connected"  # webhook_enabled=True → GitHub API 已验证
-    elif (datetime.now(UTC) - webhook_last_event_at) > timedelta(hours=_WEBHOOK_INACTIVE_HOURS):
-        webhook_status = "inactive"
-    else:
-        webhook_status = "connected"
+    webhook_status = "disconnected" if not project.webhook_enabled else "connected"
 
     pr_count = 0
     review_count = 0
@@ -100,7 +91,7 @@ async def _format_project(
         "name": project.name,
         "platform": project.platform,
         "repo_url": project.repo_url,
-        "webhook_enabled": webhook_enabled,
+        "webhook_enabled": project.webhook_enabled,
         "webhook_status": webhook_status,
         "webhook_last_event_at": (
             webhook_last_event_at.isoformat() if webhook_last_event_at else None

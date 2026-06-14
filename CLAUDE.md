@@ -69,6 +69,8 @@
 | 排查常见错误 | `docs/runbooks/common-errors.md` |
 | 查阅特定功能的详细设计 | `docs/features/[feature-name]/` |
 | 查阅开发计划与进度 | `docs/plans/current.md` |
+| 了解架构反射、事故复盘 | `docs/reflections/2026-06-14-webhook-status-architecture.md` |
+| 了解状态判定与数据源规则 | `docs/architecture/module-boundaries.md#六状态判定与数据源规则` |
 
 ## 六、基础命令
 

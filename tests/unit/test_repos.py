@@ -109,6 +109,7 @@ class TestFindingRepo:
     async def test_count_by_severity(self, db):
         f1, f2 = MagicMock(), MagicMock()
         from review_agent.types.enums import FindingSeverity
+
         f1.severity = FindingSeverity.CRITICAL
         f2.severity = FindingSeverity.WARNING
         db.execute = AsyncMock(return_value=make_result_mock([f1, f2]))

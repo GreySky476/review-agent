@@ -38,11 +38,16 @@ class ReviewState(TypedDict):
     repo_name: str
     sha: str
     files: list[PRFile]
+    pr_number: int | None  # PR 评审时设置，push 为 None
 
     # ── 处理中状态（逐步填充） ──
     target_files: list[PRFile]
     chunks: list[CodeChunk]
     source_codes: dict[str, str]
+    previous_review_id: str | None   # 上次评审的 review ID（增量用）
+    last_reviewed_sha: str | None    # 上次评到的 SHA（增量用）
+    previous_file_paths: list[str]   # 上次评审已覆盖的 file_path 列表（增量去重用）
+    new_chunks: list[CodeChunk]      # 本次新增的 chunk，fanout/route 基于此
 
     # ── 挂起的 chunk（由 Send 设置，节点读取后用 reducer 合并 findings） ──
     pending_chunk: CodeChunk | None

@@ -35,6 +35,7 @@ from review_agent.service.dimensions.base import (
 from review_agent.service.dimensions.structure import review_structure
 from review_agent.service.error_logger import log_error
 from review_agent.service.git.base import GitProvider, PRFile
+from review_agent.service.knowledge.service import KnowledgeBaseService
 from review_agent.service.publisher import Publisher
 from review_agent.service.standards import load_standards
 from review_agent.types.enums import ChunkPath, FindingCategory, FindingSeverity, ReviewStatus
@@ -65,9 +66,11 @@ class CommitReviewService:
         self,
         git_provider: GitProvider,
         ai_provider: AIProvider | None = None,
+        knowledge_base: KnowledgeBaseService | None = None,
     ) -> None:
         self._git = git_provider
         self._ai = ai_provider
+        self._knowledge_base = knowledge_base
         self._settings = get_settings()
         self._publisher = Publisher()
         self._skip_extensions: set[str] = {
@@ -203,17 +206,30 @@ class CommitReviewService:
         findings.extend(await review_code_style(chunk))
         findings.extend(await review_dependency(chunk))
 
-        # Step 2: 根据 chunk 大小决定是否执行 AI/结构评审
+        # Step 2: RAG 规则检索（仅用于 AI 评审路径）
+        matched_rules: list[dict[str, Any]] = []
+        if chunk.path == ChunkPath.DETAILED_REVIEW and self._knowledge_base is not None:
+            try:
+                matched_rules = await self._knowledge_base.search(chunk, top_k=5)
+            except Exception:
+                logger.warning(
+                    "Knowledge base search failed for %s/%s",
+                    chunk.file_path,
+                    chunk.function_name or "?",
+                )
+
+        # Step 3: 根据 chunk 大小决定是否执行 AI/结构评审
         if chunk.path == ChunkPath.DETAILED_REVIEW:
-            # Normal chunk (≤1500 tokens) → AI + 规则
+            # Normal chunk (≤1500 tokens) → 规则 + AI + 知识库
             logger.debug(
-                "Chunk %s/%s: detailed AI review path",
+                "Chunk %s/%s: detailed AI review path (rules=%d)",
                 chunk.file_path,
                 chunk.function_name or "?",
+                len(matched_rules),
             )
             if self._ai is not None:
                 logger.info("  AI review: %s/%s ...", chunk.file_path, chunk.function_name or "?")
-                ai_findings = await self._ai_review_chunk(chunk, pr_file)
+                ai_findings = await self._ai_review_chunk(chunk, pr_file, matched_rules)
                 findings.extend(ai_findings)
         elif chunk.path == ChunkPath.STRUCTURAL_REVIEW:
             # 超大 chunk (>2000 tokens) → 结构评审 + 规则，跳过 AI
@@ -240,10 +256,17 @@ class CommitReviewService:
         self,
         chunk: CodeChunk,
         pr_file: PRFile,
+        matched_rules: list[dict[str, Any]] | None = None,
     ) -> list[DimensionFinding]:
         """使用 AI 评审单个代码块。
 
-        构造 prompt 包含函数源码 + patch diff，请求 AI 返回结构化 findings。
+        构造 prompt 包含函数源码 + patch diff + 企业自定义规则，
+        请求 AI 返回结构化 findings。
+
+        Args:
+            chunk: 待评审代码块。
+            pr_file: Pull Request 文件信息。
+            matched_rules: 知识库匹配的企业自定义规则（可选）。
         """
         if self._ai is None:
             return []
@@ -253,6 +276,23 @@ class CommitReviewService:
         system_prompt = ""
         if lang_standards:
             system_prompt += f"## 语言特定代码评审规范\n\n{lang_standards}\n\n"
+
+        # 注入企业自定义规则
+        if matched_rules:
+            system_prompt += "## 企业自定义审查规则\n\n"
+            for r in matched_rules:
+                sev = r.get("severity", "info").upper()
+                name = r.get("name", "")
+                content = r.get("content", "")
+                rule_id = r.get("id", "")
+                system_prompt += (
+                    f"- [{sev}] **{name}**: {content}"
+                    f"{'  (rule_id: ' + rule_id + ')' if rule_id else ''}\n"
+                )
+            system_prompt += (
+                "\nAI 评审时请优先参照以上企业规则。命中规则的 finding 需标注对应的 rule_id。\n\n"
+            )
+
         system_prompt += (
             "你是一位资深代码评审专家。请严格参照上述规范审查下方的代码变更，"
             "找出其中的违规项、正确性缺陷、安全风险、错误处理遗漏和逻辑错误。\n\n"

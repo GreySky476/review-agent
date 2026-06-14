@@ -29,6 +29,7 @@ from review_agent.service.review_graph.pipeline import (
     fetch_and_chunk,
     filter_files,
     generate_summary,
+    resolve_incremental,
 )
 from review_agent.service.review_graph.state import ReviewState
 
@@ -54,11 +55,12 @@ def _with_git(
 def _with_ai(
     node_fn: Callable[..., Any],
     ai_provider: AIProvider | None,
+    knowledge_base: Any = None,
 ) -> Callable[[ReviewState], Any]:
-    """注入 ai_provider 的包装器。"""
+    """注入 ai_provider 和 knowledge_base 的包装器。"""
 
     async def wrapper(state: ReviewState) -> Any:
-        return await node_fn(state, ai_provider=ai_provider)
+        return await node_fn(state, ai_provider=ai_provider, knowledge_base=knowledge_base)
 
     return wrapper
 
@@ -66,12 +68,14 @@ def _with_ai(
 def build_review_graph(
     git_provider: GitProvider,
     ai_provider: AIProvider | None = None,
+    knowledge_base: Any = None,
 ) -> StateGraph:
     """构建 LangGraph 评审流水线。
 
     Args:
         git_provider: Git 平台适配器（GitHub / GitLab / Gitee）。
         ai_provider: AI 模型调用器。为 None 时 AI 评审节点跳过。
+        knowledge_base: 知识库服务（可选），用于企业自定义规则检索。
 
     Returns:
         已编译可调用的 StateGraph。
@@ -89,8 +93,11 @@ def build_review_graph(
     builder.add_node("run_style_rules", run_style_rules)
     builder.add_node("run_dependency_rules", run_dependency_rules)
 
+    # 增量去重
+    builder.add_node("resolve_incremental", resolve_incremental)
+
     # AI 与结构评审
-    builder.add_node("ai_review", _with_ai(ai_review_chunk, ai_provider))
+    builder.add_node("ai_review", _with_ai(ai_review_chunk, ai_provider, knowledge_base))
     builder.add_node("structural_review", structural_review_chunk)
     builder.add_node("dispatch_chunks", _pass_through)
 
@@ -103,9 +110,10 @@ def build_review_graph(
     builder.add_edge(START, "filter_files")
     builder.add_edge("filter_files", "fetch_and_chunk")
 
-    # fetch_and_chunk → 并行分发到 5 个维度
+    # finish_and_chunk → resolve_incremental → 并行分发到 5 个维度
+    builder.add_edge("fetch_and_chunk", "resolve_incremental")
     builder.add_conditional_edges(
-        "fetch_and_chunk",
+        "resolve_incremental",
         fanout_to_dimensions,
     )
 

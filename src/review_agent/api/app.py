@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from review_agent.api.commits import router as commits_router
 from review_agent.api.dashboard import router as dashboard_router
 from review_agent.api.errors import router as errors_router
+from review_agent.api.export import router as export_router
 from review_agent.api.findings import router as findings_router
 from review_agent.api.health import router as health_router
 from review_agent.api.projects import router as projects_router
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(prs_router, prefix="/api/v1")
     app.include_router(commits_router, prefix="/api/v1")
     app.include_router(errors_router, prefix="/api/v1")
+    app.include_router(export_router, prefix="/api/v1")
     app.include_router(findings_router, prefix="/api/v1")
     app.include_router(rules_router, prefix="/api/v1")
     app.include_router(webhook_events_router, prefix="/api/v1")

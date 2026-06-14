@@ -194,6 +194,13 @@ export function ReviewHistoryDetailPage() {
             <Button variant="secondary" size="sm" onClick={() => setShowComments(!showComments)}>
               ◉ 评论 ({0})
             </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => window.open(`/api/v1/reviews/${reviewId}/export/md`)}
+            >
+              📥 导出 MD
+            </Button>
           </div>
           {filteredFindings.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">

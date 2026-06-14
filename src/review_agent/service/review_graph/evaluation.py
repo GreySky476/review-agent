@@ -91,11 +91,17 @@ async def run_dependency_rules(state: ReviewState) -> dict[str, Any]:
 async def ai_review_chunk(
     state: ReviewState,
     ai_provider: AIProvider | None = None,
+    knowledge_base: Any = None,
 ) -> dict[str, Any]:
     """对单个 chunk 进行 AI 评审。
 
     由 route_chunks edge 通过 Send("ai_review", {"pending_chunk": chunk})
     触发。每个 Send 分支看到一个独立的 pending_chunk。
+
+    Args:
+        state: 评审状态。
+        ai_provider: AI 模型调用器。
+        knowledge_base: 知识库服务（可选），用于企业自定义规则检索。
     """
     chunk = state.get("pending_chunk")
     if chunk is None:
@@ -115,14 +121,27 @@ async def ai_review_chunk(
             patch = f.patch
             break
 
+    # RAG 规则检索
+    matched_rules: list[dict[str, Any]] = []
+    if knowledge_base is not None:
+        try:
+            matched_rules = await knowledge_base.search(chunk, top_k=5)
+        except Exception:
+            logger.warning(
+                "Knowledge base search failed for %s/%s",
+                chunk.file_path,
+                chunk.function_name or "?",
+            )
+
     logger.info(
-        "ai_review: starting %s/%s (tokens=%d, patch=%s)",
+        "ai_review: starting %s/%s (tokens=%d, patch=%s, rules=%d)",
         chunk.file_path,
         chunk.function_name or "?",
         chunk.estimated_tokens,
         "yes" if patch else "no",
+        len(matched_rules),
     )
-    findings = await _ai_review(chunk, patch, ai_provider)
+    findings = await _ai_review(chunk, patch, ai_provider, matched_rules)
     logger.info(
         "ai_review: %s/%s → %d findings",
         chunk.file_path,
@@ -177,8 +196,16 @@ async def _ai_review(
     chunk: CodeChunk,
     patch: str | None,
     ai: AIProvider,
+    matched_rules: list[dict[str, Any]] | None = None,
 ) -> list[DimensionFinding]:
-    """调用 AI 模型评审单个代码块。"""
+    """调用 AI 模型评审单个代码块。
+
+    Args:
+        chunk: 待评审代码块。
+        patch: 代码 diff（可选）。
+        ai: AI 模型调用器。
+        matched_rules: 知识库匹配的企业自定义规则（可选）。
+    """
     settings = get_settings()
 
     # 注入语言特定规范
@@ -186,6 +213,24 @@ async def _ai_review(
     system_parts: list[str] = []
     if lang_standards:
         system_parts.append(f"## 语言特定代码评审规范\n\n{lang_standards}")
+
+    # 注入企业自定义规则
+    if matched_rules:
+        rules_block = "## 企业自定义审查规则\n\n"
+        for r in matched_rules:
+            sev = r.get("severity", "info").upper()
+            name = r.get("name", "")
+            content = r.get("content", "")
+            rule_id = r.get("id", "")
+            rules_block += (
+                f"- [{sev}] **{name}**: {content}"
+                f"{'  (rule_id: ' + rule_id + ')' if rule_id else ''}\n"
+            )
+        rules_block += (
+            "\nAI 评审时请优先参照以上企业规则。命中规则的 finding 需标注对应的 rule_id。\n"
+        )
+        system_parts.append(rules_block)
+
     system_parts.append(
         "你是一位资深代码评审专家。请严格参照上述规范审查下方的代码变更，"
         "找出其中的违规项、正确性缺陷、安全风险、错误处理遗漏和逻辑错误。"

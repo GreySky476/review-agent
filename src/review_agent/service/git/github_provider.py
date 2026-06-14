@@ -125,6 +125,32 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
             msg = f"Failed to fetch commit diff {repo_name}@{sha}: {exc}"
             raise GitProviderError(msg) from exc
 
+    async def get_compare_diff(self, repo_name: str, base_sha: str, head_sha: str) -> list[PRFile]:
+        """获取两个 SHA 之间的差异文件列表（用于增量比较）。"""
+        try:
+            repo = self._client.get_repo(repo_name)
+            comparison = repo.compare(base_sha, head_sha)
+            files = []
+            for f in comparison.files:
+                files.append(
+                    PRFile(
+                        filename=f.filename,
+                        status=f.status,
+                        additions=f.additions,
+                        deletions=f.deletions,
+                        patch=getattr(f, "patch", None),
+                    )
+                )
+            return files
+        except Exception as exc:
+            logger.warning("Failed to compare diff %s..%s: %s", base_sha, head_sha, exc)
+            await log_error(
+                error_type="git_api_failed",
+                error_message=f"Failed to compare diff {repo_name}@{base_sha}..{head_sha}: {exc}",
+            )
+            msg = f"Failed to compare diff {repo_name}@{base_sha}..{head_sha}: {exc}"
+            raise GitProviderError(msg) from exc
+
     async def publish_commit_summary(self, repo_name: str, sha: str, summary: str) -> None:
         """在提交上发布摘要评论。"""
         try:

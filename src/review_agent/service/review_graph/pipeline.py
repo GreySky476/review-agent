@@ -92,7 +92,41 @@ async def fetch_and_chunk(
     return {"chunks": chunks, "source_codes": sources, "unreviewed_files": unreviewed}
 
 
-# ─── 第 5 步：聚合 ─────────────────────────────────────────
+# ─── 第 3 步：增量去重 ───────────────────────────────────────
+
+
+async def resolve_incremental(state: ReviewState) -> dict[str, Any]:
+    """对比上次评审的文件列表，标记本次新增的 chunk。
+
+    有 previous_file_paths 时，只对 file_path 不在其中的 chunk 做评审。
+    首次评审（无 previous_file_paths）时全量评审。
+    """
+    chunks = state.get("chunks", [])
+    prev_paths = state.get("previous_file_paths", [])
+
+    if not prev_paths:
+        new_chunks = chunks
+        logger.info(
+            "resolve_incremental: first review, all %d chunks are new",
+            len(chunks),
+        )
+    else:
+        prev_set = set(prev_paths)
+        new_chunks = [c for c in chunks if c.file_path not in prev_set]
+        skipped = len(chunks) - len(new_chunks)
+        if skipped:
+            logger.info(
+                "resolve_incremental: %d/%d chunks already reviewed, skipping",
+                skipped,
+                len(chunks),
+            )
+        else:
+            logger.info("resolve_incremental: no previously reviewed chunks found")
+
+    return {"new_chunks": new_chunks}
+
+
+# ─── 第 4 步：聚合 ─────────────────────────────────────────
 
 
 async def aggregate_findings(state: ReviewState) -> dict[str, Any]:

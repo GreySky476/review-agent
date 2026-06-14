@@ -173,6 +173,13 @@ class RuleModel(Base, TimestampMixin, SoftDeleteMixin):
     tags: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    embedding: Mapped[str | None] = mapped_column(Text, nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("projects.id"),
+        nullable=True,
+    )
 
 
 # ── User ─────────────────────────────────────────────────
@@ -239,6 +246,10 @@ class PullRequestModel(Base, TimestampMixin):
     is_merged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     merged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     platform: Mapped[Platform] = mapped_column(String(32), nullable=False)
+    last_reviewed_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_review_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("reviews.id"), nullable=True
+    )
 
 
 # ── Commit ─────────────────────────────────────────────────

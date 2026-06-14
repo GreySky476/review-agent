@@ -13,13 +13,14 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from review_agent.repo.commit import CommitRepo
+from review_agent.repo.finding import FindingRepo
 from review_agent.repo.project import ProjectRepo
 from review_agent.repo.pull_request import PullRequestRepo
 from review_agent.repo.review import ReviewRepo
 from review_agent.repo.webhook_event import WebhookEventRepo
 from review_agent.service.error_logger import log_error
 from review_agent.service.git.github_provider import GitHubProvider
-from review_agent.service.queue import enqueue_commit_review
+from review_agent.service.queue import enqueue_commit_review, enqueue_pr_review
 from review_agent.types.enums import EventAction, Platform, ReviewStatus
 
 logger = logging.getLogger(__name__)
@@ -171,15 +172,16 @@ async def trigger_pr_review(
     pr_head_sha: str | None,
     pr_number: int,
 ) -> None:
-    """为 PR 事件触发评审。"""
+    """为 PR 事件触发评审（含增量上下文）。"""
     if not pr_head_sha:
         logger.warning("No head SHA in PR #%d, skipping review", pr_number)
         return
-    changed_files: list[dict[str, Any]] = []
+    all_files: list[dict[str, Any]] = []
     try:
         git = GitHubProvider()
-        pr_files = await git.get_commit_diff(repo_full_name, pr_head_sha)
-        changed_files = [
+        # 改用 get_pr_diff 拉全量 diff（所有 commit 的变更）
+        pr_files = await git.get_pr_diff(repo_full_name, pr_number)
+        all_files = [
             {
                 "filename": f.filename,
                 "status": f.status,
@@ -190,25 +192,37 @@ async def trigger_pr_review(
             for f in pr_files
         ]
         logger.info(
-            "Fetched %d changed files for PR #%d@%s",
-            len(changed_files),
+            "Fetched PR diff for #%d: %d files (sha=%s)",
             pr_number,
+            len(all_files),
             pr_head_sha[:8],
         )
     except Exception as exc:
-        logger.warning(
-            "Failed to fetch PR #%d diff for %s: %s",
-            pr_number,
-            repo_full_name,
-            exc,
-        )
+        logger.warning("Failed to fetch PR #%d diff: %s", pr_number, exc)
         await log_error(
             error_type="git_api_failed",
-            error_message=f"Failed to fetch PR #{pr_number} diff for {repo_full_name}: {exc}",
+            error_message=f"Failed to fetch PR #{pr_number} diff: {exc}",
         )
-    if not changed_files:
-        logger.info("No changed files found for PR #%d, skipping review", pr_number)
+    if not all_files:
+        logger.info("No files in PR diff for #%d, skipping review", pr_number)
         return
+
+    # 查询上次评审记录，构建增量上下文
+    previous_review_id: str | None = None
+    last_reviewed_sha: str | None = None
+    previous_file_paths: list[str] = []
+    try:
+        prev_review = await ReviewRepo(db).get_latest_completed_by_pr(project_id, pr_number)
+        if prev_review:
+            previous_review_id = prev_review.id
+            last_reviewed_sha = prev_review.head_sha
+            # 获取上次评审已覆盖的文件路径
+            prev_findings = await FindingRepo(db).list_by_review(prev_review.id)
+            previous_file_paths = list({f.file_path for f in prev_findings})
+    except Exception:
+        logger.debug("Failed to load previous review context: %s", exc_info=True)
+
+    # 创建评审记录
     review_repo = ReviewRepo(db)
     review = await review_repo.create(
         project_id=project_id,
@@ -218,22 +232,31 @@ async def trigger_pr_review(
         status=ReviewStatus.PENDING,
         task_id=None,
     )
-    task_id = await enqueue_commit_review(
+
+    # 入队（使用 PR 评审通道，支持增量）
+    task_id = await enqueue_pr_review(
         project_id=project_id,
         repo_name=repo_full_name,
         sha=pr_head_sha,
-        changed_files=changed_files,
+        pr_number=pr_number,
+        all_files=all_files,
         review_id=review.id,
+        previous_review_id=previous_review_id,
+        last_reviewed_sha=last_reviewed_sha,
+        previous_file_paths=previous_file_paths,
     )
     if task_id:
         review.task_id = task_id
         await db.flush()
     logger.info(
-        "PR review triggered: project=%s pr=#%d sha=%s review=%s",
+        "PR review triggered: project=%s pr=#%d sha=%s review=%s"
+        " incremental=%s prev_files=%d",
         project_id,
         pr_number,
         pr_head_sha[:8],
         review.id,
+        bool(previous_review_id),
+        len(previous_file_paths),
     )
 
 

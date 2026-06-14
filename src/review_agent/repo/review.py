@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from review_agent.repo.base import BaseRepository
+from review_agent.types.enums import ReviewStatus
 from review_agent.types.orm import ReviewModel
 
 
@@ -35,6 +36,25 @@ class ReviewRepo(BaseRepository[ReviewModel]):  # type: ignore[misc]
         stmt = select(ReviewModel).where(
             ReviewModel.head_sha == head_sha,
             ReviewModel.is_deleted.is_(False),
+        )
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_latest_completed_by_pr(
+        self, project_id: str, pr_number: int
+    ) -> ReviewModel | None:
+        """查询 PR 最新完成的评审（增量时用于对比 previous_review_id）。"""
+        completed = [ReviewStatus.COMPLETED, ReviewStatus.COMPLETED_WITH_ERRORS]
+        stmt = (
+            select(ReviewModel)
+            .where(
+                ReviewModel.project_id == project_id,
+                ReviewModel.pr_number == pr_number,
+                ReviewModel.status.in_(completed),
+                ReviewModel.is_deleted.is_(False),
+            )
+            .order_by(ReviewModel.create_time.desc())
+            .limit(1)
         )
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()

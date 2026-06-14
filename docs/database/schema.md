@@ -18,7 +18,7 @@
        │ (7 fields)         │          │  ├─ findings (14 fields)     │
        │                    │          │  └─ comments (8 fields)      │
 ┌──────────────┐            │          │                              │
-│    teams     │────────────┘          ├─ pull_requests (9 fields)    │
+│    teams     │────────────┘          ├─ pull_requests (11 fields)   │
 │  (5 fields)  │                       │                              │
 └──────┬───────┘                       ├─ commits (12 fields)         │
        │                              │                              │
@@ -210,6 +210,8 @@ webhook_enabled=true 且有近期事件 → connected
 | is_merged | Boolean | NOT NULL | 是否已合并 |
 | merged_at | DateTime(tz) | NULL | 合并时间 |
 | platform | String(32) | NOT NULL | 平台 |
+| last_reviewed_sha | String(64) | NULL | 上次评审的 commit SHA，用于增量比较 |
+| last_review_id | String(36) | FK→reviews.id, NULL | 上次评审的 review ID |
 | create_time | DateTime(tz) | NOT NULL | |
 | update_time | DateTime(tz) | NOT NULL | |
 

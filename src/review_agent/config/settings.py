@@ -44,6 +44,10 @@ class AppSettings(BaseSettings):
     # ── AI 模型 ──────────────────────────────────────────
     ai_model_name: str = Field(default="deepseek-v4-flash", description="主 AI 模型名称")
     ai_economy_model: str = Field(default="deepseek-v4-flash", description="经济模型名称")
+    ai_embedding_model: str = Field(
+        default="text-embedding-3-small",
+        description="嵌入模型名称",
+    )
     ai_base_url: str = Field(default="https://api.deepseek.com", description="AI API 基础 URL")
     ai_api_key: str = Field(default="", description="AI API 密钥")
     ai_request_timeout: int = Field(default=30, description="AI 请求超时（秒）")
