@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import re
@@ -143,13 +142,71 @@ class AIReviewer:
             return []
 
     @staticmethod
+    def _try_parse_json(text: str) -> list[dict[str, Any]] | None:
+        """尝试多种方式解析 JSON，兼容 AI 生成的常见格式问题。"""
+        # 方式 1: 标准解析
+        try:
+            result = json.loads(text)
+            if isinstance(result, list):
+                return result
+            return None
+        except json.JSONDecodeError:
+            pass
+
+        # 方式 2: 去掉控制字符后重试
+        cleaned = re.sub(r"[\x00-\x1f]", "", text)
+        try:
+            result = json.loads(cleaned)
+            if isinstance(result, list):
+                return result
+            return None
+        except json.JSONDecodeError:
+            pass
+
+        # 方式 3: 修复常见 AI JSON 格式问题
+        cleaned = re.sub(r",\s*([}\]])", r"\1", text)  # 移除尾部逗号
+        # 将未转义的双引号内的单引号替换
+        # 注：若描述中有单引号字符串，json.loads 本就能解析，此处只兜底
+        cleaned = cleaned.replace("'", '"')
+        try:
+            result = json.loads(cleaned)
+            if isinstance(result, list):
+                return result
+            return None
+        except json.JSONDecodeError:
+            pass
+
+        # 方式 4: 提取最外层 [] 内的内容重试
+        stack: list[int] = []
+        brackets: list[tuple[int, int]] = []
+        for i, ch in enumerate(text):
+            if ch == "[":
+                stack.append(i)
+                continue
+            if ch != "]" or not stack:
+                continue
+            start = stack.pop()
+            if not stack:
+                brackets.append((start, i))
+        for s, e in brackets:
+            try:
+                result = json.loads(text[s : e + 1])
+                if isinstance(result, list):
+                    return result
+            except json.JSONDecodeError:
+                continue
+
+        return None
+
+    @staticmethod
     def _parse_response(content: str, chunk: CodeChunk) -> list[DimensionFinding]:
         """从 AI 响应中解析 findings。
 
-        支持三种格式，按优先级尝试：
+        支持多种格式，按优先级尝试：
         1. 被 ```json ... ``` markdown 包裹的 JSON
         2. 从内容中提取第一个 `[...]` 数组（找到第一个 `[` 和最后一个 `]`）
         3. 直接解析整个内容
+        4. 修复常见 AI JSON 格式问题后重试（尾部逗号、单引号等）
         """
         raw_findings: list[dict[str, Any]] | None = None
 
@@ -159,21 +216,18 @@ class AIReviewer:
             block = json_match.group(0)
             inner = re.search(r"\[[\s\S]*\]", block)
             if inner:
-                with contextlib.suppress(json.JSONDecodeError):
-                    raw_findings = json.loads(inner.group(0))
+                raw_findings = AIReviewer._try_parse_json(inner.group(0))
 
         # 尝试 2: 提取第一个 [ 和最后一个 ]
         if raw_findings is None:
             start = content.find("[")
             end = content.rfind("]")
             if start != -1 and end > start:
-                with contextlib.suppress(json.JSONDecodeError):
-                    raw_findings = json.loads(content[start : end + 1])
+                raw_findings = AIReviewer._try_parse_json(content[start : end + 1])
 
         # 尝试 3: 直接解析全文
         if raw_findings is None:
-            with contextlib.suppress(json.JSONDecodeError):
-                raw_findings = json.loads(content.strip())
+            raw_findings = AIReviewer._try_parse_json(content.strip())
 
         if raw_findings is None:
             preview = (content[:300] + "...") if content else "<empty response>"
