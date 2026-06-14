@@ -1,6 +1,6 @@
 # 系统架构总览
 
-> 文档版本：v1.1 | 更新日期：2026-06-09 | 关联文档：[模块边界](module-boundaries.md)、[API 规范](../api/conventions.md)
+> 文档版本：v1.2 | 更新日期：2026-06-15 | 关联文档：[模块边界](module-boundaries.md)、[API 规范](../api/conventions.md)
 
 ---
 
@@ -117,80 +117,88 @@
 ### 4.1 PR 评审流程
 
 ```text
-Webhook 收到 PR 事件
+GitHub Webhook (pull_request: opened/synchronize/reopened)
        │
        ▼
-签名验证 ──失败──→ 返回 403
+webhook.py → 解析 event → 提取 repo_name + pr_number + action
        │
-      通过
-       ▼
-事件去重（60 秒窗口）
-       │
-       ▼
-写入消息队列
+       ├── ensure_project_connected() → 查找 project → 记录 webhook_event
+       ├── sync_pull_request() → upsert PR 数据到 pull_requests 表
        │
        ▼
-Worker 消费 → 拉取 Diff → 分块
+   分支过滤（review_branches）
+       │ 匹配
+       ▼
+   trigger_pr_review()
        │
-       ├── 正常块 → 五维详细评审
-       ├── 边界块 → 五维详细评审
-       └── 超大块 → 结构评审 + 最小化安全检查
+       ├── get_pr_diff() 拉全量 diff（所有 commit 变更）
+       ├── 查上次评审记录（增量上下文）
+       ├── ReviewRepo.create(status=PENDING)
+       └── enqueue_pr_review() → ARQ Redis 队列
        │
        ▼
-结果聚合 → 去重 → 发布决策
+   ARQ Worker: run_review()  (支持 LangGraph)
        │
-       ├── critical/warning > 5 → 摘要评论 + 报告链接
-       └── 否则 → 行级评论
+       ├── 初始化 GitHubProvider + DeepSeekProvider
+       ├── 加载企业规则到 KnowledgeBase
+       ├── (可选) LangGraph 图编排
+       │    ├── filter_files → 路径模式过滤（.claude/** 等）
+       │    ├── fetch_and_chunk → 取源码 → 按函数分块
+       │    ├── resolve_incremental → 对比上次评审，标记 new_chunks
+       │    ├── 5 路并行规则检查 (Send) → 安全/Bug/性能/风格/依赖
+       │    ├── route_chunks → AI 评审 (DeepSeek) / 结构评审
+       │    └── aggregate → 去重 → 打分 → 摘要
+       │
+       ├── publish_summary_comment() → GitHub PR Comment（标注 commit SHA）
+       ├── DB: ReviewModel + FindingModel 写入
+       └── DB: pull_requests.last_reviewed_sha 更新
 ```
 
-### 4.2 Push 评审流程（M2）
+**增量评审**：二次 synchronize 时，对比上次评审的 `previous_file_paths`，只评审新增/修改的文件，已评文件跳过。
 
-新增的 Push 事件评审支持开发者推送代码后自动触发 AI 评审：
+### 4.2 Push 评审流程
 
 ```text
 GitHub Push Webhook (x-github-event: push)
        │
        ▼
-解析 payload → 提取 head_commit、repo_name、changed_files
+handle_push_event()
        │
-       ▼
-保存 commit 记录 → CommitRepo.create()
-       │
-       ▼
-入队 → enqueue_commit_review()
+       ├── 查找 project → 标记 webhook_enabled
+       ├── 提取 head_commit.sha + ref → branch
+       ├── 分支过滤（review_branches）
+       ├── CommitRepo → create/update
+       ├── ReviewRepo.create(status=PENDING)
+       └── enqueue_commit_review() → ARQ Redis 队列
        │
        ▼
 ARQ Worker: run_commit_review()
        │
-       ▼
-CommitReviewService (文件级并发，默认 3 个同时处理)
+       ├── 初始化 GitHubProvider + DeepSeekProvider
+       ├── 加载企业规则到 KnowledgeBase
+       ├── CommitReviewService (文件级并发，Semaphore=3)
+       │    ├── 路径模式过滤（.claude/** 等跳过）
+       │    ├── get_file_content() → chunk_file() → 按函数分块
+       │    ├── 逐 chunk:
+       │    │   ├── ≤1500 → 规则检查 + RAG + AI 评审 (DeepSeek)
+       │    │   ├── 1500~2000 → 规则检查 + 结构评审
+       │    │   └── >2000 → 结构评审（圈复杂度/行数/参数）
+       │    └── Publisher.aggregate() → 去重 → 打分
        │
-       ├── 文件 1 → get_file_content() → chunk_file()
-       ├── 文件 2 → get_file_content() → chunk_file()
-       └── 文件 3 → get_file_content() → chunk_file()
-       │
-       ▼
-逐 chunk 审查:
-       ├── ≤1500 tokens → 规则检查 + AI 评审 (DeepSeek)
-       ├── 1500~2000   → 规则检查 + 结构评审，跳过 AI
-       └── >2000       → 结构评审 (圈复杂度/行数/参数)
-       │
-       ▼
-Publisher.aggregate() → 跨文件去重 → 打分
-       │
-       ▼
-publish_commit_summary() → GitHub Commit 评论
+       ├── publish_commit_summary() → GitHub Commit 评论
+       └── DB: ReviewModel + FindingModel 写入
 ```
 
 **与 PR 评审的关键区别：**
 
 | 维度 | PR 评审 | Push 评审 |
 |------|---------|-----------|
-| 触发事件 | `pull_request` (opened/synchronize) | `push` |
-| 数据来源 | PR Diff API | Commit API |
-| 评论位置 | PR Review Comment | Commit Comment |
-| 并发策略 | 待实现 | 文件级并发 (Semaphore=3) |
-| AI 调用 | 待实现 | 按 chunk token 数分流 |
+| 触发事件 | `pull_request` (opened/synchronize/reopened) | `push` |
+| 数据来源 | `get_pr_diff()` 全量 diff | `get_commit_diff()` commit diff |
+| 并发策略 | 文件级并发 (Semaphore=3) + LangGraph Send() | 文件级并发 (Semaphore=3) |
+| 增量去重 | 支持（对比上次评审的 file_paths） | 不支持（单次 commit） |
+| 评论位置 | PR Comment（标注 commit SHA） | Commit Comment |
+| 进度追踪 | 更新 `pull_requests.last_reviewed_sha` | 无 |
 
 ### 4.3 平台心跳检测
 
@@ -219,7 +227,32 @@ FastAPI 启动 → lifespan
 
 > **状态判定规则**：项目 webhook 状态仅由 `project.webhook_enabled` 决定（由主动巡检维护），`webhook_events` 表是被动事件日志，仅用于审计和调试，不参与状态判定。详见 [模块边界 → 状态判定与数据源规则](module-boundaries.md#六状态判定与数据源规则)。
 
-### 4.5 代码分块策略
+### 4.5 数据同步策略
+
+系统采用 **DB 优先 + 定时同步 + 手动刷新** 三层数据源策略，避免 PR 详情页加载时直接调用 GitHub API。
+
+```text
+用户加载 PR 详情
+       │
+       ├── commits 表有数据 → 直接返回（< 100ms） ✅
+       │
+       ├── 定时同步（ARQ，每 5 分钟）
+       │   └── sync_project_data(project_id)
+       │       ├── 遍历项目的所有活跃 PR
+       │       ├── 调 GitHub API 获取 commits
+       │       └── bulk_upsert 到 commits 表
+       │
+       └── 手动刷新（🔄 按钮）
+           └── POST /projects/{id}/pull-requests/{num}/sync
+               ├── 实时调 GitHub API
+               ├── 更新 commits 表
+               └── 返回最新数据
+```
+
+**定时调度器**在 FastAPI lifespan 中启动，复用 ARQ 任务队列。
+详见 [数据同步功能设计](../features/data-sync/design.md)。
+
+### 4.6 代码分块策略
 
 | 分类 | Token 范围 | 处理方式 |
 |------|-----------|---------|

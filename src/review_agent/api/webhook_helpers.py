@@ -121,10 +121,20 @@ async def handle_push_event(
         return {"status": "accepted", "sha": sha}
     commit_repo = CommitRepo(db)
     existing = await commit_repo.get_by_sha(project.id, sha)
+
+    # 解析 commit 作者时间
+    raw_timestamp = head_commit.get("timestamp")
+    committed_at: datetime | None = None
+    if raw_timestamp:
+        with contextlib.suppress(ValueError, TypeError):
+            committed_at = datetime.fromisoformat(raw_timestamp)
+
     if existing:
         existing.is_reviewed = False
         existing.message = head_commit.get("message", "")
         existing.branch = branch
+        if committed_at:
+            existing.committed_at = committed_at
         await db.flush()
         logger.info("Updated existing commit record: %s (resetting is_reviewed)", sha)
     else:
@@ -135,6 +145,7 @@ async def handle_push_event(
             message=head_commit.get("message", ""),
             branch=branch,
             is_reviewed=False,
+            committed_at=committed_at,
         )
     review_repo = ReviewRepo(db)
     review = await review_repo.create(
@@ -187,6 +198,20 @@ async def trigger_pr_review(
     except Exception:
         logger.debug("trigger_pr_review: failed to load PR title", exc_info=True)
 
+    # SHA 去重检查（只拦截已完成评审的 SHA，失败/进行中不拦截）
+    try:
+        existing = await ReviewRepo(db).get_completed_by_sha(
+            project_id, pr_number, pr_head_sha
+        )
+        if existing:
+            logger.info(
+                "SHA %s for PR #%d already has completed review %s, skipping webhook",
+                pr_head_sha[:8], pr_number, existing.id[:8],
+            )
+            return
+    except Exception:
+        logger.debug("Failed to check SHA dedup: %s", exc_info=True)
+
     try:
         git = GitHubProvider()
         pr_files = await git.get_pr_diff(repo_full_name, pr_number)
@@ -217,18 +242,29 @@ async def trigger_pr_review(
     previous_review_id: str | None = None
     last_reviewed_sha: str | None = None
     previous_file_paths: list[str] = []
+    previous_reviewed_files: list[dict] = []
     try:
         prev_review = await ReviewRepo(db).get_latest_completed_by_pr(project_id, pr_number)
         if prev_review:
             previous_review_id = prev_review.id
             last_reviewed_sha = prev_review.head_sha
-            prev_findings = await FindingRepo(db).list_by_review(prev_review.id)
-            previous_file_paths = list({f.file_path for f in prev_findings})
+            # 优先使用 reviewed_files（新数据）
+            if prev_review.reviewed_files:
+                previous_reviewed_files = prev_review.reviewed_files
+                previous_file_paths = [f["path"] for f in prev_review.reviewed_files if "path" in f]
+            else:
+                # 兼容旧数据：从 findings 推导
+                prev_findings = await FindingRepo(db).list_by_review(prev_review.id)
+                previous_file_paths = list({f.file_path for f in prev_findings})
+                previous_reviewed_files = [
+                    {"path": f.file_path, "max_severity": f.severity}
+                    for f in prev_findings
+                ]
             logger.info(
                 "trigger_pr_review: previous review found: id=%s sha=%s files=%d",
                 prev_review.id,
                 last_reviewed_sha[:8] if last_reviewed_sha else "?",
-                len(previous_file_paths),
+                len(previous_reviewed_files),
             )
     except Exception:
         logger.debug("trigger_pr_review: failed to load previous review context", exc_info=True)
@@ -272,6 +308,7 @@ async def trigger_pr_review(
         previous_review_id=previous_review_id,
         last_reviewed_sha=last_reviewed_sha,
         previous_file_paths=previous_file_paths,
+        previous_reviewed_files=previous_reviewed_files,
     )
     if task_id:
         review.task_id = task_id

@@ -5,8 +5,6 @@ import { DashboardPage } from '@/pages/dashboard'
 import { ProjectsPage } from '@/pages/projects'
 import { ProjectDetailPage } from '@/pages/project-detail'
 import { ReviewDetailPage } from '@/pages/review-detail'
-import { ReviewsPage } from '@/pages/reviews'
-import { ReviewHistoryDetailPage } from '@/pages/review-history-detail'
 import { RulesPage } from '@/pages/rules'
 import { ErrorsPage } from '@/pages/errors'
 
@@ -30,8 +28,7 @@ function App() {
             <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/projects/:id" element={<ProjectDetailPage />} />
             <Route path="/projects/:id/prs/:prNumber" element={<ReviewDetailPage />} />
-            <Route path="/reviews" element={<ReviewsPage />} />
-            <Route path="/reviews/:reviewId" element={<ReviewHistoryDetailPage />} />
+            <Route path="/projects/:id/reviews/:reviewId" element={<ReviewDetailPage />} />
             <Route path="/rules" element={<RulesPage />} />
             <Route path="/errors" element={<ErrorsPage />} />
           </Route>

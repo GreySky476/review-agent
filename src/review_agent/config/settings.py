@@ -69,6 +69,10 @@ class AppSettings(BaseSettings):
         default=".md,.rst,.txt",
         description="跳过评审的文件扩展名（逗号分隔）",
     )
+    review_skip_paths: str = Field(
+        default=".claude/**,node_modules/**,__pycache__/**,.git/**,*.md,*.rst,*.txt",
+        description="评审跳过的路径模式（逗号分隔，glob 模式），支持 ** 递归匹配",
+    )
     review_max_concurrency: int = Field(
         default=3,
         description="文件级并发评审的最大并发数",

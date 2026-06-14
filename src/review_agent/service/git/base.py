@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -138,12 +139,26 @@ class GitProvider(ABC):
         ...
 
     @abstractmethod
-    async def publish_summary_comment(self, repo_name: str, pr_number: int, summary: str) -> None:
+    async def publish_summary_comment(
+        self, repo_name: str, pr_number: int, summary: str
+    ) -> int | None:
         """在 PR 中发布摘要评论。
 
         Args:
             repo_name: 仓库全名。
             pr_number: PR 编号。
             summary: Markdown 格式的摘要内容。
+        """
+        ...
+
+    @abstractmethod
+    async def list_open_prs(self, repo_name: str) -> list[dict[str, Any]]:
+        """列出仓库所有 Open 状态的 PR。
+
+        Args:
+            repo_name: 仓库全名（如 "owner/repo"）。
+
+        Returns:
+            list[dict]: [{pr_number, title, head_sha, base_sha, author, state}, ...]
         """
         ...

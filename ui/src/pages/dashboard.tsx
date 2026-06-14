@@ -342,7 +342,7 @@ export function DashboardPage() {
         <div className="rounded-lg border border-border bg-surface p-5">
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-sm font-medium text-foreground">最近评审</h2>
-            <Button variant="ghost" size="sm" onClick={() => navigate('/reviews')}>
+            <Button variant="ghost" size="sm" onClick={() => navigate('/projects')}>
               查看全部 →
             </Button>
           </div>

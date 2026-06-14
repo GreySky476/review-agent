@@ -25,6 +25,7 @@ from review_agent.api.webhook_events import router as webhook_events_router
 from review_agent.config.logging import setup_logging, setup_opentelemetry
 from review_agent.config.settings import get_settings
 from review_agent.service.health import start_periodic_health_check
+from review_agent.service.scheduler import start_sync_scheduler
 from review_agent.types.exceptions import (
     ConfigError,
     NotFoundError,
@@ -46,6 +47,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         start_periodic_health_check(
             interval_minutes=settings.health_check_interval_minutes,
         )
+    start_sync_scheduler(interval_minutes=5)
     yield
 
 

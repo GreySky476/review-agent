@@ -9,6 +9,8 @@ export interface Commit {
   branch: string | null
   pr_number: number | null
   is_reviewed: boolean
+  review_id: string | null
+  review_status: string | null
   create_time: string
 }
 
@@ -40,14 +42,17 @@ export function useTriggerCommitReview(projectId: string) {
   return useMutation({
     mutationFn: async ({
       sha,
-      mentionUser,
+      force,
+      skipLevels,
     }: {
       sha: string
-      mentionUser: string
+      force?: boolean
+      skipLevels?: string
     }) => {
       const { data } = await api.post(
         `/projects/${projectId}/commits/${sha}/review`,
-        { sha, mention_user: mentionUser },
+        null,
+        { params: { force: force ? 'true' : undefined, skip_levels: skipLevels || undefined } },
       )
       return data
     },

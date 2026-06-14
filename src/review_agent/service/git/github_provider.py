@@ -59,6 +59,55 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
             )
             raise
 
+    async def get_pr_commits(
+        self, repo_name: str, pr_number: int
+    ) -> list[dict[str, Any]]:
+        """获取 PR 的所有 commit 列表。
+
+        Returns:
+            list[dict]: [{sha, message, author, date}, ...]
+        """
+        try:
+            repo, pr = self._get_repo_and_pr(repo_name, pr_number)
+            commits = []
+            for c in pr.get_commits():
+                commits.append({
+                    "sha": c.sha,
+                    "message": (c.commit.message or "").split("\n")[0],
+                    "author": c.commit.author.name if c.commit.author else None,
+                    "date": c.commit.author.date.isoformat()
+                        if c.commit.author and c.commit.author.date
+                        else None,
+                })
+            return commits
+        except Exception as exc:
+            logger.warning("Failed to fetch commits for %s#%d: %s", repo_name, pr_number, exc)
+            return []
+
+    async def list_open_prs(self, repo_name: str) -> list[dict[str, Any]]:
+        """列出仓库所有 Open 状态的 PR。
+
+        Returns:
+            list[dict]: [{pr_number, title, head_sha, base_sha, author, state}, ...]
+        """
+        try:
+            repo = self._client.get_repo(repo_name)
+            pulls = repo.get_pulls(state="open")
+            return [
+                {
+                    "pr_number": pr.number,
+                    "title": pr.title or "",
+                    "head_sha": pr.head.sha,
+                    "base_sha": pr.base.sha,
+                    "author": pr.user.login if pr.user else "",
+                    "state": "open",
+                }
+                for pr in pulls
+            ]
+        except Exception as exc:
+            logger.warning("Failed to list open PRs for %s: %s", repo_name, exc)
+            return []
+
     async def get_pr_diff(self, repo_name: str, pr_number: int) -> list[PRFile]:
         try:
             repo, pr = self._get_repo_and_pr(repo_name, pr_number)
@@ -187,10 +236,14 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
             msg = f"Failed to publish line comments on {repo_name}#{pr_number}: {exc}"
             raise GitProviderError(msg) from exc
 
-    async def publish_summary_comment(self, repo_name: str, pr_number: int, summary: str) -> None:
+    async def publish_summary_comment(
+        self, repo_name: str, pr_number: int, summary: str
+    ) -> int | None:
+        """在 PR 上发布摘要评论，返回评论 ID。"""
         try:
             repo, pr = self._get_repo_and_pr(repo_name, pr_number)
-            pr.create_issue_comment(summary)
+            comment = pr.create_issue_comment(summary)
+            return comment.id
         except Exception as exc:
             await log_error(
                 error_type="publish_failed",
@@ -198,6 +251,30 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
             )
             msg = f"Failed to publish summary on {repo_name}#{pr_number}: {exc}"
             raise GitProviderError(msg) from exc
+
+    async def get_issue_comment(self, repo_name: str, comment_id: int) -> str | None:
+        """获取指定 PR Comment 的内容。"""
+        try:
+            repo = self._client.get_repo(repo_name)
+            comment = repo.get_issue_comment(comment_id)
+            return comment.body
+        except Exception as exc:
+            logger.warning("Failed to get issue comment #%d on %s: %s", comment_id, repo_name, exc)
+            return None
+
+    async def edit_issue_comment(self, repo_name: str, comment_id: int, body: str) -> bool:
+        """编辑指定 PR Comment 的内容（用于追评追加）。"""
+        try:
+            repo = self._client.get_repo(repo_name)
+            comment = repo.get_issue_comment(comment_id)
+            comment.edit(body)
+            return True
+        except Exception as exc:
+            await log_error(
+                error_type="publish_failed",
+                error_message=f"Failed to edit issue comment #{comment_id} on {repo_name}: {exc}",
+            )
+            return False
 
     async def check_webhook(self, repo_name: str, webhook_url: str) -> dict[str, Any]:
         """检查仓库是否已配置指定 URL 的 Webhook。

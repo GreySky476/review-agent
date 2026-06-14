@@ -54,7 +54,7 @@
     {
       "name": "db",
       "description": "直接操作数据库：查询或修改数据，使用正确的数据库凭据",
-      "prompt": "你正在执行数据库操作。\n\n连接信息：\n- 数据库 URL: `postgresql+asyncpg://review:review@localhost:5432/review_agent`\n- 使用 `uv run python -c \"...\"` 执行（需要 asyncio 封装）\n\n示例模板：\n```python\nimport asyncio\nfrom sqlalchemy import text\nfrom sqlalchemy.ext.asyncio import create_async_engine\n\nasync def main():\n    engine = create_async_engine('postgresql+asyncpg://review:review@localhost:5432/review_agent')\n    async with engine.connect() as conn:\n        # 查询\n        result = await conn.execute(text(\"SELECT * FROM projects LIMIT 5\"))\n        for row in result.all():\n            print(row)\n        # 修改后需要 commit\n        await conn.commit()\n    await engine.dispose()\nasyncio.run(main())\n```\n\n注意：\n- 查询不用 commit，修改（INSERT/UPDATE/DELETE）需要 conn.commit()\n- 使用完成后调用 engine.dispose() 关闭连接\n- 表名和字段名与 ORM 模型定义一致"
+      "prompt": "你正在执行数据库操作。\n\n连接信息：\n- 数据库 URL: `$DB_URL`（通过环境变量或 `.claude/settings.local.json` 配置）\n- 使用 `uv run python -c \"...\"` 执行（需要 asyncio 封装）\n\n示例模板：\n```python\nimport asyncio\nfrom sqlalchemy import text\nfrom sqlalchemy.ext.asyncio import create_async_engine\n\nasync def main():\n    engine = create_async_engine('$DB_URL')\n    async with engine.connect() as conn:\n        # 查询\n        result = await conn.execute(text(\"SELECT * FROM projects LIMIT 5\"))\n        for row in result.all():\n            print(row)\n        # 修改后需要 commit\n        await conn.commit()\n    await engine.dispose()\nasyncio.run(main())\n```\n\n注意：\n- 查询不用 commit，修改（INSERT/UPDATE/DELETE）需要 conn.commit()\n- 使用完成后调用 engine.dispose() 关闭连接\n- 表名和字段名与 ORM 模型定义一致"
     }
   ]
 }
