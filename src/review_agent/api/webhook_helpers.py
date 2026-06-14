@@ -174,12 +174,21 @@ async def trigger_pr_review(
 ) -> None:
     """为 PR 事件触发评审（含增量上下文）。"""
     if not pr_head_sha:
-        logger.warning("No head SHA in PR #%d, skipping review", pr_number)
+        logger.warning("trigger_pr_review: no head SHA for PR #%d", pr_number)
         return
     all_files: list[dict[str, Any]] = []
+
+    # 查 PR 真实标题
+    pr_title = f"PR #{pr_number}"
+    try:
+        pr_record = await PullRequestRepo(db).get_by_pr_number(project_id, pr_number)
+        if pr_record and pr_record.title:
+            pr_title = pr_record.title
+    except Exception:
+        logger.debug("trigger_pr_review: failed to load PR title", exc_info=True)
+
     try:
         git = GitHubProvider()
-        # 改用 get_pr_diff 拉全量 diff（所有 commit 的变更）
         pr_files = await git.get_pr_diff(repo_full_name, pr_number)
         all_files = [
             {
@@ -192,20 +201,17 @@ async def trigger_pr_review(
             for f in pr_files
         ]
         logger.info(
-            "Fetched PR diff for #%d: %d files (sha=%s)",
+            "trigger_pr_review: PR #%d diff fetched: %d files sha=%s",
             pr_number,
             len(all_files),
             pr_head_sha[:8],
         )
     except Exception as exc:
-        logger.warning("Failed to fetch PR #%d diff: %s", pr_number, exc)
+        logger.warning("trigger_pr_review: failed to fetch diff for PR #%d: %s", pr_number, exc)
         await log_error(
             error_type="git_api_failed",
-            error_message=f"Failed to fetch PR #{pr_number} diff: {exc}",
+            error_message=f"trigger_pr_review: failed to fetch PR #{pr_number} diff: {exc}",
         )
-    if not all_files:
-        logger.info("No files in PR diff for #%d, skipping review", pr_number)
-        return
 
     # 查询上次评审记录，构建增量上下文
     previous_review_id: str | None = None
@@ -216,24 +222,46 @@ async def trigger_pr_review(
         if prev_review:
             previous_review_id = prev_review.id
             last_reviewed_sha = prev_review.head_sha
-            # 获取上次评审已覆盖的文件路径
             prev_findings = await FindingRepo(db).list_by_review(prev_review.id)
             previous_file_paths = list({f.file_path for f in prev_findings})
+            logger.info(
+                "trigger_pr_review: previous review found: id=%s sha=%s files=%d",
+                prev_review.id,
+                last_reviewed_sha[:8] if last_reviewed_sha else "?",
+                len(previous_file_paths),
+            )
     except Exception:
-        logger.debug("Failed to load previous review context: %s", exc_info=True)
+        logger.debug("trigger_pr_review: failed to load previous review context", exc_info=True)
 
     # 创建评审记录
     review_repo = ReviewRepo(db)
+    review_status = ReviewStatus.PENDING if all_files else ReviewStatus.FAILED
     review = await review_repo.create(
         project_id=project_id,
         pr_number=pr_number,
-        pr_title=f"PR #{pr_number}",
+        pr_title=pr_title,
         head_sha=pr_head_sha,
-        status=ReviewStatus.PENDING,
+        status=review_status,
         task_id=None,
     )
+    logger.info(
+        "trigger_pr_review: review created: id=%s status=%s pr_title='%s'",
+        review.id,
+        review_status.value,
+        pr_title,
+    )
 
-    # 入队（使用 PR 评审通道，支持增量）
+    # 没有文件 → 标记失败后直接返回
+    if not all_files:
+        logger.warning(
+            "trigger_pr_review: no files for PR #%d, review %s marked failed",
+            pr_number,
+            review.id,
+        )
+        await db.flush()
+        return
+
+    # 入队
     task_id = await enqueue_pr_review(
         project_id=project_id,
         repo_name=repo_full_name,
@@ -248,16 +276,20 @@ async def trigger_pr_review(
     if task_id:
         review.task_id = task_id
         await db.flush()
-    logger.info(
-        "PR review triggered: project=%s pr=#%d sha=%s review=%s"
-        " incremental=%s prev_files=%d",
-        project_id,
-        pr_number,
-        pr_head_sha[:8],
-        review.id,
-        bool(previous_review_id),
-        len(previous_file_paths),
-    )
+        logger.info(
+            "trigger_pr_review: enqueued: pr=#%d review=%s task=%s files=%d incr=%s",
+            pr_number,
+            review.id,
+            task_id,
+            len(all_files),
+            bool(previous_review_id),
+        )
+    else:
+        logger.warning(
+            "trigger_pr_review: enqueue failed for PR #%d review=%s (Redis down?)",
+            pr_number,
+            review.id,
+        )
 
 
 async def sync_pull_request(

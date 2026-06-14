@@ -139,17 +139,21 @@ async def aggregate_findings(state: ReviewState) -> dict[str, Any]:
     publisher = Publisher()
     deduped, score = publisher.aggregate(all_findings)
 
-    # 失败文件惩罚：按未评审比例扣分
+    # 失败文件惩罚：按未评审比例扣分（增量场景基于 new_chunks 对应的文件数）
     unreviewed = state.get("unreviewed_files", [])
-    total_files = len(state.get("target_files", []))
+    # 使用 new_chunks 的文件数作为基数（增量场景仅新文件参与评估）
+    new_chunks = state.get("new_chunks", [])
+    reviewed_file_count = len({c.file_path for c in new_chunks}) if new_chunks else len(
+        state.get("target_files", [])
+    )
     error_msgs: list[str] = []
 
     if unreviewed:
-        fail_ratio = len(unreviewed) / max(total_files, 1)
+        fail_ratio = len(unreviewed) / max(reviewed_file_count, 1)
         penalty = int(fail_ratio * 40)
         score = max(0, score - penalty)
 
-        error_msg = f"{len(unreviewed)}/{total_files} 个文件无法获取源码：" + ", ".join(
+        error_msg = f"{len(unreviewed)}/{reviewed_file_count} 个文件无法获取源码：" + ", ".join(
             unreviewed[:5]
         )
         if len(unreviewed) > 5:

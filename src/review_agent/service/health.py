@@ -166,7 +166,12 @@ async def check_project_webhooks(session: object) -> None:
                 except Exception as exc:
                     logger.debug("Webhook check skipped for %s: %s", repo_name, exc)
 
-        await asyncio.gather(*[_check_one(p) for p in projects], return_exceptions=True)
+        results = await asyncio.gather(
+            *[_check_one(p) for p in projects], return_exceptions=True
+        )
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                logger.error("Webhook check failed for project %d: %s", i, r)
         await session.flush()  # type: ignore[arg-type]
         changed = sum(1 for p in projects if p.webhook_enabled)  # type: ignore[attr-defined]
         logger.info(
@@ -195,7 +200,11 @@ async def run_all_checks(session: object, webhook_check: bool = True) -> None:
     ]
     if webhook_check:
         tasks.append(check_project_webhooks(session))
-    await asyncio.gather(*tasks, return_exceptions=True)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            task_name = getattr(tasks[i], "__name__", str(tasks[i]))
+            logger.error("Health check task %s failed: %s", task_name, r)
 
 
 # ── 后台周期任务 ──────────────────────────────────────────

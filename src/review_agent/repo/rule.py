@@ -85,3 +85,4 @@ class RuleRepo(BaseRepository[RuleModel]):  # type: ignore[misc]
             if rule:
                 rule.embedding = vector_json
                 rule.embedding_model = model_name
+        await self._db.flush()

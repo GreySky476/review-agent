@@ -42,33 +42,54 @@ async def github_webhook(
     try:
         payload: dict[str, Any] = json.loads(raw)
     except json.JSONDecodeError as exc:
-        logger.warning("Invalid JSON payload from GitHub webhook: %s", exc)
+        logger.warning("Webhook invalid JSON: %s", exc)
         await log_error(
             error_type="webhook_parse_failed",
             error_message=f"GitHub webhook invalid JSON: {exc}",
         )
         return {"status": "ignored", "reason": "invalid_json"}
     event_id = x_github_delivery or str(uuid4())
+    delivery_label = event_id[:8]
 
     logger.info(
-        "GitHub webhook received: event=%s delivery=%s",
+        "Webhook[%s] received: event=%s",
+        delivery_label,
         x_github_event,
-        event_id,
     )
 
+    # ── ping ──
     if x_github_event == "ping":
         hook_id = payload.get("hook_id", "?")
         zen = payload.get("zen", "")
-        logger.info("GitHub ping: hook_id=%s zen=%s", hook_id, zen)
+        logger.info("Webhook[%s] ping: hook_id=%s zen=%s", delivery_label, hook_id, zen)
         return {"status": "pong", "hook_id": str(hook_id), "zen": zen}
 
+    # ── push ──
     if x_github_event == "push":
-        return await handle_push_event(db, payload, event_id)
+        logger.info("Webhook[%s] push event -> handle_push_event", delivery_label)
+        result = await handle_push_event(db, payload, event_id)
+        logger.info(
+            "Webhook[%s] push result: status=%s sha=%s",
+            delivery_label,
+            result.get("status"),
+            result.get("sha", "")[:8],
+        )
+        return result
 
+    # ── PR event ──
     raw_action = payload.get("action", "")
     repo_full_name = extract_repo_full_name(Platform.GITHUB, payload)
     pr_number = extract_pr_number(Platform.GITHUB, payload)
     parsed_action = parse_event_action(Platform.GITHUB, payload)
+    action_label = parsed_action.value if parsed_action else raw_action
+
+    logger.info(
+        "Webhook[%s] PR event: repo=%s pr=%s action=%s",
+        delivery_label,
+        repo_full_name,
+        pr_number,
+        action_label,
+    )
 
     if repo_full_name and pr_number:
         project_id = await ensure_project_connected(
@@ -76,31 +97,51 @@ async def github_webhook(
             platform=Platform.GITHUB,
             repo_full_name=repo_full_name,
             event_id=event_id,
-            action=parsed_action.value if parsed_action else raw_action,
+            action=action_label,
             pr_number=pr_number,
             raw_payload=raw.decode(),
         )
 
+        if project_id:
+            logger.info("Webhook[%s] project found: id=%s", delivery_label, project_id)
+        else:
+            logger.warning(
+                "Webhook[%s] project not found for repo=%s",
+                delivery_label,
+                repo_full_name,
+            )
+
         pr_data = payload.get("pull_request", {})
         if project_id and pr_data:
             await sync_pull_request(db, project_id, Platform.GITHUB, pr_data, raw_action)
+            logger.info(
+                "Webhook[%s] PR synced: project=%s pr=%d",
+                delivery_label,
+                project_id,
+                pr_number,
+            )
 
         trigger_actions = {EventAction.OPENED, EventAction.SYNCHRONIZE, EventAction.REOPENED}
         if project_id and parsed_action in trigger_actions:
-            # 检查 PR 目标分支是否匹配 review_branches 设置
             pr_base_ref = pr_data.get("base", {}).get("ref")
             project_repo = ProjectRepo(db)
             allowed = await project_repo.get_review_branches(project_id)
             if pr_base_ref and not any(fnmatch.fnmatch(pr_base_ref, p) for p in allowed):
                 logger.info(
-                    "Skipped PR review: target_branch='%s' not in review list %s (project=%s)",
+                    "Webhook[%s] branch skipped: base='%s' not in %s",
+                    delivery_label,
                     pr_base_ref,
                     allowed,
-                    project_id,
                 )
                 return {"status": "skipped", "reason": "branch_not_matched"}
 
             pr_head_sha = pr_data.get("head", {}).get("sha")
+            logger.info(
+                "Webhook[%s] triggering PR review: pr=%d sha=%s",
+                delivery_label,
+                pr_number,
+                pr_head_sha[:8] if pr_head_sha else "none",
+            )
             await trigger_pr_review(
                 db=db,
                 project_id=project_id,
@@ -108,82 +149,25 @@ async def github_webhook(
                 pr_head_sha=pr_head_sha,
                 pr_number=pr_number,
             )
+        elif project_id and parsed_action:
+            logger.info(
+                "Webhook[%s] no review: action=%s not in %s",
+                delivery_label,
+                action_label,
+                [a.value for a in trigger_actions],
+            )
+    else:
+        logger.warning(
+            "Webhook[%s] parse failed: repo=%s pr=%s action=%s",
+            delivery_label,
+            repo_full_name,
+            pr_number,
+            action_label,
+        )
 
     if parsed_action is None or pr_number is None:
+        logger.info("Webhook[%s] ignored: parse_failed", delivery_label)
         return {"status": "ignored", "reason": "parse_failed"}
 
+    logger.info("Webhook[%s] accepted: pr=%s action=%s", delivery_label, pr_number, action_label)
     return {"status": "accepted", "pr_number": str(pr_number)}
-
-
-@router.post("/gitlab")
-async def gitlab_webhook(
-    request: Request,
-    db: AsyncSession = Depends(get_session),
-) -> dict[str, str]:
-    """接收 GitLab Webhook 事件。"""
-    raw = await request.body()
-    payload: dict[str, Any] = json.loads(raw)
-    logger.info("GitLab webhook received")
-
-    repo_full_name = extract_repo_full_name(Platform.GITLAB, payload)
-    action = parse_event_action(Platform.GITLAB, payload)
-    pr_number = extract_pr_number(Platform.GITLAB, payload)
-
-    if repo_full_name and pr_number:
-        await ensure_project_connected(
-            db=db,
-            platform=Platform.GITLAB,
-            repo_full_name=repo_full_name,
-            event_id=str(uuid4()),
-            action=action.value if action else "unknown",
-            pr_number=pr_number,
-            raw_payload=raw.decode(),
-        )
-
-    if action is None or pr_number is None:
-        return {"status": "ignored", "reason": "parse_failed"}
-
-    return {"status": "accepted", "pr_number": str(pr_number)}
-
-
-@router.post("/gitee")
-async def gitee_webhook(
-    request: Request,
-    x_gitee_event: str | None = Header(None),
-    db: AsyncSession = Depends(get_session),
-) -> dict[str, str]:
-    """接收 Gitee Webhook 事件。"""
-    raw = await request.body()
-    payload: dict[str, Any] = json.loads(raw)
-
-    logger.info("Gitee webhook received: event=%s", x_gitee_event)
-
-    if x_gitee_event == "Test Hook":
-        hook_id = payload.get("hook_id", "?")
-        return {"status": "pong", "hook_id": str(hook_id), "event": "test_hook"}
-
-    repo_full_name = extract_repo_full_name(Platform.GITEE, payload)
-    action = parse_event_action(Platform.GITEE, payload)
-    pr_number = extract_pr_number(Platform.GITEE, payload)
-
-    if repo_full_name and pr_number:
-        await ensure_project_connected(
-            db=db,
-            platform=Platform.GITEE,
-            repo_full_name=repo_full_name,
-            event_id=str(uuid4()),
-            action=action.value if action else "unknown",
-            pr_number=pr_number,
-            raw_payload=raw.decode(),
-        )
-
-    if action is None or pr_number is None:
-        return {"status": "ignored", "reason": "parse_failed"}
-
-    return {"status": "accepted", "pr_number": str(pr_number)}
-
-
-@router.get("/health")
-async def webhook_health() -> dict[str, str]:
-    """Webhook 连通性手动验证端点。"""
-    return {"status": "ok", "service": "review-agent"}

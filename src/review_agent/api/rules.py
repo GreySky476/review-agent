@@ -12,6 +12,7 @@ RuleModel CRUD：
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,6 +22,7 @@ from review_agent.config.database import get_session
 from review_agent.repo.rule import RuleRepo
 from review_agent.service.embedding import EmbeddingService
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["rules"])
 
 
@@ -176,7 +178,8 @@ async def re_embed_all_rules(
             await repo.update(rule.id, embedding=vector_json)
             embedder.cache_set(rule.id, vector)
             updated += 1
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to embed rule %s: %s", rule.id, exc)
             continue
 
     return {

@@ -69,7 +69,7 @@ def _render_findings_table(findings: list[FindingModel]) -> list[str]:
         if f.line_start:
             location += f":{f.line_start}"
         title = f.title.replace("|", "\\|")
-        suggestion = f.suggestion.replace("|", "\\|").replace("\n", " ")
+        suggestion = (f.suggestion or "").replace("|", "\\|").replace("\n", " ")
         lines.append(
             f"| {icon} **{label}** | {f.category} |"
             f" {location} | {title} | {suggestion} |"

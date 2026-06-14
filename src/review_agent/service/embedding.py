@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 # 回退伪向量的维度
 _FALLBACK_DIM = 128
 
+# 模块级共享缓存（解决 rules.py 中多个 EmbeddingService 实例缓存不一致的问题）
+_shared_cache: dict[str, list[float]] = {}
+
 
 class EmbeddingService:
     """轻量嵌入服务。
@@ -37,9 +40,9 @@ class EmbeddingService:
         """初始化嵌入服务。
 
         Args:
-            cache: 预填充的内存缓存（可选），用于从 DB 加载历史向量。
+            cache: 预填充的内存缓存（可选），默认使用模块级共享缓存。
         """
-        self._cache: dict[str, list[float]] = cache or {}
+        self._cache: dict[str, list[float]] = _shared_cache if cache is None else cache
         self._settings = get_settings()
 
     async def embed(self, text: str) -> list[float]:
