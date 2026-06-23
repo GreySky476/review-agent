@@ -72,8 +72,8 @@ def _extract_functions(source_code: str) -> list[dict[str, Any]]:
     functions = []
     lines = source_code.split("\n")
 
-    # 匹配 def / async def 行
-    func_pattern = re.compile(r"^(async\s+)?def\s+([a-zA-Z_]\w*)\s*\(")
+    # 匹配 def / async def 行（兼容前导缩进以支持类方法）
+    func_pattern = re.compile(r"^\s*(async\s+)?def\s+([a-zA-Z_]\w*)\s*\(")
     decorator_pattern = re.compile(r"^\s*@")
 
     current_func: dict[str, Any] | None = None
@@ -102,12 +102,9 @@ def _extract_functions(source_code: str) -> list[dict[str, Any]]:
             continue
 
         if in_func and current_func is not None:
-            current_func["lines"].append(line)
-            if "(" in line or ")" in line:
-                paren_depth += line.count("(") - line.count(")")
-
-            # 函数结束：新的顶级 def 或缩进回到 0（不在签名中）
-            if paren_depth <= 0 and line.strip() and not line[0].isspace():
+            # 遇到新的 def（包括缩进类方法），结束当前函数，开始新函数
+            func_match = func_pattern.match(line)
+            if func_match:
                 # 前一函数结束
                 code = "\n".join(current_func["lines"])
                 functions.append(
@@ -119,17 +116,31 @@ def _extract_functions(source_code: str) -> list[dict[str, Any]]:
                     }
                 )
                 # 当前行是新函数的开始
-                if func_pattern.match(line):
-                    name = match.group(2) if match else line.split("def ")[1].split("(")[0]
-                    current_func = {
-                        "name": name,
-                        "start_line": i + 1,
-                        "lines": [line],
+                current_func = {
+                    "name": func_match.group(2),
+                    "start_line": i + 1,
+                    "lines": [line],
+                }
+                paren_depth = line.count("(") - line.count(")")
+                continue
+
+            current_func["lines"].append(line)
+            if "(" in line or ")" in line:
+                paren_depth += line.count("(") - line.count(")")
+
+            # 函数结束：缩进回到 0（非 def 行，不在签名中）
+            if paren_depth <= 0 and line.strip() and not line[0].isspace():
+                code = "\n".join(current_func["lines"])
+                functions.append(
+                    {
+                        "name": current_func["name"],
+                        "code": code,
+                        "start_line": current_func["start_line"],
+                        "end_line": i,
                     }
-                    paren_depth = line.count("(") - line.count(")")
-                else:
-                    current_func = None
-                    in_func = False
+                )
+                current_func = None
+                in_func = False
 
     # 捕获最后一个函数
     if current_func is not None:

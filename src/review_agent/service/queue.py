@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import traceback
+from dataclasses import dataclass, field
 from typing import Any
 
 from arq import create_pool
@@ -11,10 +12,23 @@ from arq.connections import RedisSettings
 
 from review_agent.config.logging import setup_logging
 from review_agent.config.settings import get_settings
+from review_agent.service.dimensions.base import DimensionFinding
 from review_agent.service.error_logger import log_error
 from review_agent.service.git.base import PRFile
 from review_agent.service.git.github_provider import GitHubProvider
 from review_agent.types.enums import ReviewStatus
+
+
+@dataclass
+class _ReviewResult:
+    """评审结果（LangGraph 路径使用）。"""
+    findings: list[DimensionFinding] = field(default_factory=list)
+    score: int = 100
+    summary_markdown: str = ""
+    status: ReviewStatus = ReviewStatus.COMPLETED
+    error_message: str | None = None
+    reviewed_files: list[dict[str, str | None]] | None = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -118,29 +132,19 @@ async def run_review(
             for f in all_files
         ]
 
-        if settings.use_langgraph:
-            result = await _run_with_langgraph(
-                git_provider,
-                ai_provider,
-                repo_name,
-                sha,
-                files,
-                knowledge_base,
-                pr_number=pr_number,
-                previous_review_id=previous_review_id,
-                last_reviewed_sha=last_reviewed_sha,
-                previous_file_paths=previous_file_paths,
-                previous_reviewed_files=previous_reviewed_files,
-            )
-        else:
-            from review_agent.service.commit_review import CommitReviewService
-
-            service = CommitReviewService(
-                git_provider=git_provider,
-                ai_provider=ai_provider,
-                knowledge_base=knowledge_base,
-            )
-            result = await service.review_commit(repo_name, sha, files)
+        result = await _run_with_langgraph(
+            git_provider,
+            ai_provider,
+            repo_name,
+            sha,
+            files,
+            knowledge_base,
+            pr_number=pr_number,
+            previous_review_id=previous_review_id,
+            last_reviewed_sha=last_reviewed_sha,
+            previous_file_paths=previous_file_paths,
+            previous_reviewed_files=previous_reviewed_files,
+        )
 
         # 发布 PR Comment（标记 commit SHA，增量时追评）
         if result.summary_markdown and pr_number:
@@ -451,27 +455,17 @@ async def run_commit_review(
             for f in changed_files
         ]
 
-        if settings.use_langgraph:
-            result = await _run_with_langgraph(
-                git_provider,
-                ai_provider,
-                repo_name,
-                sha,
-                files,
-                knowledge_base,
-                previous_review_id=previous_review_id,
-                previous_reviewed_files=previous_reviewed_files,
-                skip_levels=skip_levels,
-            )
-        else:
-            from review_agent.service.commit_review import CommitReviewService
-
-            service = CommitReviewService(
-                git_provider=git_provider,
-                ai_provider=ai_provider,
-                knowledge_base=knowledge_base,
-            )
-            result = await service.review_commit(repo_name, sha, files)
+        result = await _run_with_langgraph(
+            git_provider,
+            ai_provider,
+            repo_name,
+            sha,
+            files,
+            knowledge_base,
+            previous_review_id=previous_review_id,
+            previous_reviewed_files=previous_reviewed_files,
+            skip_levels=skip_levels,
+        )
 
         # 发布摘要评论到 GitHub（失败不影响评审结果）
         if result.summary_markdown:
@@ -666,7 +660,6 @@ async def _run_with_langgraph(
     skip_levels: str = "",
 ) -> Any:
     """使用 LangGraph 图执行评审（支持 PR 增量）。"""
-    from review_agent.service.commit_review import CommitReviewResult
     from review_agent.service.review_graph.graph import build_review_graph
 
     logger.info(
@@ -728,7 +721,7 @@ async def _run_with_langgraph(
     has_issues = bool(unreviewed) or bool(error_msgs)
     status = ReviewStatus.COMPLETED_WITH_ERRORS if has_issues else ReviewStatus.COMPLETED
 
-    return CommitReviewResult(
+    return _ReviewResult(
         findings=deduped,
         score=result_state.get("score", 100),
         summary_markdown=result_state.get("summary_markdown", ""),

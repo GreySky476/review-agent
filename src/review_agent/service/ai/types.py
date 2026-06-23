@@ -33,3 +33,17 @@ class AICompletionResponse:
     model: str
     usage: dict[str, int] | None = None
     raw: dict[str, Any] | None = None
+
+
+@dataclass
+class BatchReviewEntry:
+    """批量评审中的单个 chunk 上下文。"""
+
+    file_path: str
+    function_name: str | None
+    source_code: str
+    start_line: int
+    end_line: int
+    estimated_tokens: int
+    patch: str | None = None
+    matched_rules: list[dict[str, Any]] | None = None

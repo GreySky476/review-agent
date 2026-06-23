@@ -73,17 +73,13 @@ class AppSettings(BaseSettings):
         default=".claude/**,node_modules/**,__pycache__/**,.git/**,*.md,*.rst,*.txt",
         description="评审跳过的路径模式（逗号分隔，glob 模式），支持 ** 递归匹配",
     )
-    review_max_concurrency: int = Field(
-        default=3,
-        description="文件级并发评审的最大并发数",
+    ai_batch_max_input_tokens: int = Field(
+        default=3000,
+        description="单次批量调用的最大预估输入 token，0=禁用批量",
     )
     verbose_report_threshold: int = Field(
         default=5,
         description="触发详细报告的 critical/warning Finding 数量阈值",
-    )
-    use_langgraph: bool = Field(
-        default=False,
-        description="启用 LangGraph 评审流水线（有状态、可观测、可恢复）",
     )
 
     # ── Git 平台 ─────────────────────────────────────────
