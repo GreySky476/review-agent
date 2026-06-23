@@ -119,8 +119,8 @@ async def run_all_checks(session: object, webhook_check: bool = True) -> None:
     if not webhook_check:
         return
 
-    # 根据平台连通性同步项目 webhook 状态（心跳的核心作用）
-    from sqlalchemy import select
+    # 状态变化检测：只有平台状态发生切换时才同步项目
+    from sqlalchemy import select, update
 
     from review_agent.repo.platform_health import PlatformHealthRepo
     from review_agent.types.orm import ProjectModel
@@ -131,19 +131,41 @@ async def run_all_checks(session: object, webhook_check: bool = True) -> None:
         if health is None:
             continue
         is_connected = health.status == "connected"
-        rows = await session.execute(  # type: ignore[arg-type]
-            select(ProjectModel).where(
+
+        # 只查 ID 和 webhook_enabled，判断是否全部已同步
+        result = await session.execute(  # type: ignore[arg-type]
+            select(ProjectModel.id, ProjectModel.webhook_enabled).where(
                 ProjectModel.is_deleted.is_(False),
                 ProjectModel.platform == platform_val,
             )
         )
-        for p in rows.scalars().all():
-            if p.webhook_enabled != is_connected:
-                p.webhook_enabled = is_connected
-                logger.info(
-                    "Health sync: %s → webhook_enabled=%s (platform=%s)",
-                    p.name, is_connected, platform_val,
+        rows = result.all()
+        if not rows:
+            continue
+
+        # 所有项目已处于目标状态则跳过
+        all_synced = all(enabled == is_connected for _, enabled in rows)
+        if all_synced:
+            logger.debug(
+                "Health sync skipped: all %d %s projects already in target state",
+                len(rows), platform_val,
+            )
+            continue
+
+        # 只更新状态不一致的项目
+        changed = 0
+        for pid, enabled in rows:
+            if enabled != is_connected:
+                await session.execute(  # type: ignore[arg-type]
+                    update(ProjectModel)
+                    .where(ProjectModel.id == pid)
+                    .values(webhook_enabled=is_connected)
                 )
-    await session.flush()  # type: ignore[arg-type]
-    logger.info("Health check done: all projects synced")
+                changed += 1
+        await session.flush()  # type: ignore[arg-type]
+        logger.info(
+            "Health sync: %d/%d %s projects updated to webhook_enabled=%s",
+            changed, len(rows), platform_val, is_connected,
+        )
+    logger.info("Health check done")
 
