@@ -315,19 +315,33 @@ async def trigger_pr_review(
         status=review_status,
         task_id=None,
     )
+
     if not is_new:
+        if review.status not in (ReviewStatus.PENDING, ReviewStatus.RUNNING):
+            logger.info(
+                "SHA %s for PR #%d already has review %s (status=%s), skipping",
+                pr_head_sha[:8],
+                pr_number,
+                review.id[:8],
+                review.status.value,
+            )
+            return
         logger.info(
-            "SHA %s for PR #%d already has review %s, skipping",
+            "SHA %s for PR #%d has stuck review %s (status=%s), retrying",
             pr_head_sha[:8],
             pr_number,
             review.id[:8],
+            review.status.value,
         )
-        return
+        # 重新入队（复用已有 review_id，新结果会覆盖 findings）
+        await db.refresh(review)
+
     logger.info(
-        "trigger_pr_review: review created: id=%s status=%s pr_title='%s'",
+        "trigger_pr_review: review id=%s status=%s pr_title='%s' (is_new=%s)",
         review.id,
-        review_status.value,
+        review.status.value if not is_new else review_status.value,
         pr_title,
+        is_new,
     )
 
     # 没有文件 → 标记失败后直接返回
