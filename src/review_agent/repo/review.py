@@ -56,6 +56,24 @@ class ReviewRepo(BaseRepository[ReviewModel]):  # type: ignore[misc]
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_sha(
+        self, project_id: str, pr_number: int, head_sha: str
+    ) -> ReviewModel | None:
+        """查询指定 SHA 的最新评审记录（不限状态），用于 SHA 去重。"""
+        stmt = (
+            select(ReviewModel)
+            .where(
+                ReviewModel.project_id == project_id,
+                ReviewModel.pr_number == pr_number,
+                ReviewModel.head_sha == head_sha,
+                ReviewModel.is_deleted.is_(False),
+            )
+            .order_by(ReviewModel.create_time.desc())
+            .limit(1)
+        )
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_completed_by_sha(
         self, project_id: str, pr_number: int, head_sha: str
     ) -> ReviewModel | None:

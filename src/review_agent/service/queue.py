@@ -422,6 +422,23 @@ async def run_commit_review(
         except Exception:
             logger.warning("Failed to load rules into knowledge base: %s", traceback.format_exc())
 
+        # webhook 路径的 changed_files 缺少 patch，从 GitHub API 补全
+        if not any(f.get("patch") for f in changed_files):
+            try:
+                commit_files = await git_provider.get_commit_diff(repo_name, sha)
+                patch_map = {cf.filename: cf for cf in commit_files}
+                for f in changed_files:
+                    cf = patch_map.get(f["filename"])
+                    if cf:
+                        f["patch"] = cf.patch
+                        f["additions"] = cf.additions
+                        f["deletions"] = cf.deletions
+            except Exception:
+                logger.warning(
+                    "Failed to enrich patches for %s@%s, falling back to full review",
+                    repo_name, sha,
+                )
+
         # 转换 changed_files 为 PRFile 对象
         files = [
             PRFile(
@@ -611,6 +628,7 @@ _DEFAULT_STATE: dict[str, Any] = {
     "chunks": [],
     "source_codes": {},
     "pending_chunk": None,
+    "pending_structural_chunks": [],
     "rule_findings": [],
     "ai_findings": [],
     "structural_findings": [],
@@ -707,13 +725,14 @@ async def _run_with_langgraph(
     deduped = result_state.get("deduped_findings", [])
     reviewed_files = compute_reviewed_files(new_chunks, deduped)
 
+    has_issues = bool(unreviewed) or bool(error_msgs)
+    status = ReviewStatus.COMPLETED_WITH_ERRORS if has_issues else ReviewStatus.COMPLETED
+
     return CommitReviewResult(
         findings=deduped,
         score=result_state.get("score", 100),
         summary_markdown=result_state.get("summary_markdown", ""),
-        # 显式设为 COMPLETED：不依赖 graph state 中的 status 字段
-        # （_DEFAULT_STATE 默认 RUNNING，graph 可能未覆盖）
-        status=ReviewStatus.COMPLETED,
+        status=status,
         error_message="; ".join(error_msgs) if error_msgs else None,
         reviewed_files=reviewed_files,
     )

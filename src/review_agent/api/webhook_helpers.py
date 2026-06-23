@@ -7,6 +7,7 @@ import fnmatch
 import hashlib
 import hmac
 import logging
+import traceback
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +23,7 @@ from review_agent.service.error_logger import log_error
 from review_agent.service.git.github_provider import GitHubProvider
 from review_agent.service.queue import enqueue_commit_review, enqueue_pr_review
 from review_agent.types.enums import EventAction, Platform, ReviewStatus
+from review_agent.types.orm import ProjectModel
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,11 @@ async def ensure_project_connected(
     pr_number: int,
     raw_payload: str,
 ) -> str | None:
-    """查找项目，标记 webhook 已连接，并记录事件。返回 project_id 或 None。"""
+    """查找项目并记录 Webhook 事件。返回 project_id 或 None。
+
+    注意：此函数不修改 project 状态（只读查找）。
+    若要标记 webhook 已连接，请调用 mark_webhook_connected()。
+    """
     if not repo_full_name:
         return None
     domain = _PLATFORM_DOMAINS.get(platform)
@@ -57,10 +63,6 @@ async def ensure_project_connected(
             error_message=f"No project matching repo_url: {repo_url}",
         )
         return None
-    if not project.webhook_enabled:
-        project.webhook_enabled = True
-        await db.flush()
-        logger.info("Marked project %s webhook as connected", project.id)
     event_repo = WebhookEventRepo(db)
     await event_repo.create_from_payload(
         project_id=project.id,
@@ -71,6 +73,14 @@ async def ensure_project_connected(
         raw_payload=raw_payload,
     )
     return project.id  # type: ignore[no-any-return]
+
+
+async def mark_webhook_connected(project: ProjectModel, db: AsyncSession) -> None:
+    """将 project 标记为 webhook 已连接。"""
+    if not project.webhook_enabled:
+        project.webhook_enabled = True
+        await db.flush()
+        logger.info("Marked project %s webhook as connected", project.id)
 
 
 async def handle_push_event(
@@ -89,10 +99,7 @@ async def handle_push_event(
     if not project:
         logger.warning("No project found for repo: %s", repo_url)
         return {"status": "ignored", "reason": "no_project"}
-    if not project.webhook_enabled:
-        project.webhook_enabled = True
-        await db.flush()
-        logger.info("Marked project %s webhook as connected", project.id)
+    await mark_webhook_connected(project, db)
     head_commit: dict[str, Any] = payload.get("head_commit") or {}
     if not head_commit.get("id"):
         return {"status": "ignored", "reason": "no_head_commit"}
@@ -151,18 +158,22 @@ async def handle_push_event(
     review = await review_repo.create(
         project_id=project.id,
         pr_number=None,
-        pr_title=f"Push {branch}: {sha[:8]}",
+        pr_title=head_commit.get("message", f"Push {branch}: {sha[:8]}"),
         head_sha=sha,
         status=ReviewStatus.PENDING,
         task_id=None,
     )
-    task_id = await enqueue_commit_review(
-        project_id=project.id,
-        repo_name=repo_full_name,
-        sha=sha,
-        changed_files=changed_files,
-        review_id=review.id,
-    )
+    try:
+        task_id = await enqueue_commit_review(
+            project_id=project.id,
+            repo_name=repo_full_name,
+            sha=sha,
+            changed_files=changed_files,
+            review_id=review.id,
+        )
+    except Exception:
+        logger.warning("Failed to enqueue commit review for %s: %s", sha, traceback.format_exc())
+        task_id = None
     if task_id:
         review.task_id = task_id
         await db.flush()
@@ -198,15 +209,20 @@ async def trigger_pr_review(
     except Exception:
         logger.debug("trigger_pr_review: failed to load PR title", exc_info=True)
 
-    # SHA 去重检查（只拦截已完成评审的 SHA，失败/进行中不拦截）
+    # SHA 去重：COMPLETED/PENDING/RUNNING 状态均跳过，FAILED 允许重试
     try:
-        existing = await ReviewRepo(db).get_completed_by_sha(
+        existing = await ReviewRepo(db).get_by_sha(
             project_id, pr_number, pr_head_sha
         )
-        if existing:
+        if existing and existing.status in (
+            ReviewStatus.COMPLETED,
+            ReviewStatus.COMPLETED_WITH_ERRORS,
+            ReviewStatus.PENDING,
+            ReviewStatus.RUNNING,
+        ):
             logger.info(
-                "SHA %s for PR #%d already has completed review %s, skipping webhook",
-                pr_head_sha[:8], pr_number, existing.id[:8],
+                "SHA %s for PR #%d already has review %s (status=%s), skipping",
+                pr_head_sha[:8], pr_number, existing.id[:8], existing.status.value,
             )
             return
     except Exception:
