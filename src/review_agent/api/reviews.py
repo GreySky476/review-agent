@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -29,14 +28,21 @@ async def trigger_review(
     """手动触发评审。"""
     _ = project_id
     review_repo = ReviewRepo(db)
-    review = await review_repo.create(
+    review, is_new = await review_repo.create_or_get(
         project_id=project_id,
         pr_number=_body.pr_number,
-        pr_title=_body.pr_title,
         head_sha=_body.head_sha,
+        pr_title=_body.pr_title,
         status=ReviewStatus.PENDING,
     )
-    return {"task_id": str(uuid.uuid4()), "status": review.status, "result_url": None}
+    # 已有卡住的 PENDING review → 放行返回已有记录，前端可据此决定是否重试
+    return {
+        "task_id": review.id,
+        "review_id": review.id,
+        "status": review.status.value,
+        "is_new": is_new,
+        "result_url": None,
+    }
 
 
 @router.get("/projects/{project_id}/reviews/{task_id}")
