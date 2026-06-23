@@ -193,13 +193,20 @@ class TestTriggerPrReviewCreateOrGet:
             mock_enqueue.return_value = "task-789"
 
             await trigger_pr_review(
-                db=db, project_id="proj-123", repo_full_name="test/repo",
-                pr_head_sha="abc123def456", pr_number=42,
+                db=db,
+                project_id="proj-123",
+                repo_full_name="test/repo",
+                pr_head_sha="abc123def456",
+                pr_number=42,
             )
 
             mock_review_repo.create_or_get.assert_awaited_once_with(
-                project_id="proj-123", pr_number=42, head_sha="abc123def456",
-                pr_title="Add login feature", status=ReviewStatus.PENDING, task_id=None,
+                project_id="proj-123",
+                pr_number=42,
+                head_sha="abc123def456",
+                pr_title="Add login feature",
+                status=ReviewStatus.PENDING,
+                task_id=None,
             )
             mock_enqueue.assert_awaited_once()
 
@@ -240,8 +247,11 @@ class TestTriggerPrReviewCreateOrGet:
             mock_enqueue.return_value = "task-789"
 
             await trigger_pr_review(
-                db=db, project_id="proj-123", repo_full_name="test/repo",
-                pr_head_sha="abc123def456", pr_number=42,
+                db=db,
+                project_id="proj-123",
+                repo_full_name="test/repo",
+                pr_head_sha="abc123def456",
+                pr_number=42,
             )
 
             mock_review_repo.create_or_get.assert_awaited_once()

@@ -58,6 +58,10 @@ class TestRecoveryLoop:
                 "review_agent.service.scheduler.asyncio.sleep",
                 side_effect=KeyboardInterrupt,
             ),
+            patch(
+                "review_agent.service.scheduler._acquire_scheduler_lock",
+                return_value=True,
+            ),
         ):
             mock_factory.return_value = mock_session
 
@@ -92,6 +96,10 @@ class TestRecoveryLoop:
                 "review_agent.service.scheduler.asyncio.sleep",
                 side_effect=KeyboardInterrupt,
             ),
+            patch(
+                "review_agent.service.scheduler._acquire_scheduler_lock",
+                return_value=True,
+            ),
         ):
             mock_factory.return_value = mock_session
 
@@ -120,6 +128,10 @@ class TestRecoveryLoop:
             patch(
                 "review_agent.service.scheduler.asyncio.sleep",
                 side_effect=KeyboardInterrupt,
+            ),
+            patch(
+                "review_agent.service.scheduler._acquire_scheduler_lock",
+                return_value=True,
             ),
         ):
             mock_factory.return_value = mock_session

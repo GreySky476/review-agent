@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import fnmatch
 import hashlib
@@ -68,6 +69,14 @@ async def ensure_project_connected(
         await db.flush()
         logger.info("Marked project %s webhook as connected", project.id)
     event_repo = WebhookEventRepo(db)
+
+    # 事件去重：同一 event_id 在去重窗口内已处理过则跳过
+    from review_agent.config.settings import get_settings
+
+    if await event_repo.exists_in_window(event_id, get_settings().webhook_dedup_window):
+        logger.debug("Duplicate webhook event %s, skipping", event_id[:8])
+        return project.id
+
     await event_repo.create_from_payload(
         project_id=project.id,
         platform=platform.value,
@@ -173,20 +182,34 @@ async def handle_push_event(
     if not is_new:
         logger.info(
             "Commit %s already has a review %s, skipping push review",
-            sha[:8], review.id[:8],
+            sha[:8],
+            review.id[:8],
         )
         return {"status": "accepted", "sha": sha, "task_id": ""}
-    try:
-        task_id = await enqueue_commit_review(
-            project_id=project.id,
-            repo_name=repo_full_name,
-            sha=sha,
-            changed_files=changed_files,
-            review_id=review.id,
-        )
-    except Exception:
-        logger.warning("Failed to enqueue commit review for %s: %s", sha, traceback.format_exc())
-        task_id = None
+    # 入队（含重试，指数退避 1s, 2s）
+    task_id = None
+    for attempt in range(3):
+        try:
+            task_id = await enqueue_commit_review(
+                project_id=project.id,
+                repo_name=repo_full_name,
+                sha=sha,
+                changed_files=changed_files,
+                review_id=review.id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to enqueue commit review for %s (attempt %d/3): %s",
+                sha, attempt + 1, traceback.format_exc(),
+            )
+        if task_id:
+            break
+        if attempt < 2:
+            logger.warning(
+                "Enqueue commit review for %s failed, retrying (%d/3)...",
+                sha, attempt + 1,
+            )
+            await asyncio.sleep(2 ** attempt)  # 1s, 2s
     if task_id:
         review.task_id = task_id
         await db.flush()
@@ -267,8 +290,7 @@ async def trigger_pr_review(
                 prev_findings = await FindingRepo(db).list_by_review(prev_review.id)
                 previous_file_paths = list({f.file_path for f in prev_findings})
                 previous_reviewed_files = [
-                    {"path": f.file_path, "max_severity": f.severity}
-                    for f in prev_findings
+                    {"path": f.file_path, "max_severity": f.severity} for f in prev_findings
                 ]
             logger.info(
                 "trigger_pr_review: previous review found: id=%s sha=%s files=%d",
@@ -293,7 +315,9 @@ async def trigger_pr_review(
     if not is_new:
         logger.info(
             "SHA %s for PR #%d already has review %s, skipping",
-            pr_head_sha[:8], pr_number, review.id[:8],
+            pr_head_sha[:8],
+            pr_number,
+            review.id[:8],
         )
         return
     logger.info(
@@ -313,19 +337,29 @@ async def trigger_pr_review(
         await db.flush()
         return
 
-    # 入队
-    task_id = await enqueue_pr_review(
-        project_id=project_id,
-        repo_name=repo_full_name,
-        sha=pr_head_sha,
-        pr_number=pr_number,
-        all_files=all_files,
-        review_id=review.id,
-        previous_review_id=previous_review_id,
-        last_reviewed_sha=last_reviewed_sha,
-        previous_file_paths=previous_file_paths,
-        previous_reviewed_files=previous_reviewed_files,
-    )
+    # 入队（含重试，指数退避 1s, 2s）
+    task_id = None
+    for attempt in range(3):
+        task_id = await enqueue_pr_review(
+            project_id=project_id,
+            repo_name=repo_full_name,
+            sha=pr_head_sha,
+            pr_number=pr_number,
+            all_files=all_files,
+            review_id=review.id,
+            previous_review_id=previous_review_id,
+            last_reviewed_sha=last_reviewed_sha,
+            previous_file_paths=previous_file_paths,
+            previous_reviewed_files=previous_reviewed_files,
+        )
+        if task_id:
+            break
+        if attempt < 2:
+            logger.warning(
+                "trigger_pr_review: enqueue failed for PR #%d, retrying (%d/3)...",
+                pr_number, attempt + 1,
+            )
+            await asyncio.sleep(2 ** attempt)  # 1s, 2s
     if task_id:
         review.task_id = task_id
         await db.flush()

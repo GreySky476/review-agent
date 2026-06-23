@@ -32,7 +32,7 @@ _MAX_MESSAGE_LENGTH = 2000
 _MAX_DETAIL_LENGTH = 5000
 
 # ── 内存缓冲队列（降级策略） ────────────────────────────────
-_BACKUP_BUFFER_MAXLEN = 100
+_BACKUP_BUFFER_MAXLEN = 1000
 _backup_buffer: deque[dict[str, Any]] = deque(maxlen=_BACKUP_BUFFER_MAXLEN)
 _buffer_lock = asyncio.Lock()
 _dropped_count: int = 0
