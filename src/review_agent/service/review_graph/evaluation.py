@@ -21,6 +21,7 @@ from review_agent.service.dimensions.base import (
     review_security,
 )
 from review_agent.service.dimensions.structure import review_structure
+from review_agent.service.error_logger import log_error
 from review_agent.service.review_graph.state import ReviewState
 
 logger = logging.getLogger(__name__)
@@ -158,10 +159,23 @@ async def run_ai_batch(
             for findings in findings_list:
                 all_findings.extend(findings)
         except Exception as exc:
-            logger.warning("Batch AI review failed: %s", exc)
+            logger.warning("Batch AI review failed for %d chunks: %s", len(batch), exc)
+            # 标记未完成文件
+            for entry in batch:
+                file_label = f"{entry.file_path}:{entry.function_name or '?'}"
+                await log_error(
+                    error_type="ai_call_failed",
+                    error_message=f"AI review failed for {file_label}: {exc}",
+                )
+            state["unreviewed_files"] = state.get("unreviewed_files", []) + [
+                f"{e.file_path}:{e.function_name or '?'}" for e in batch
+            ]
+            state["error_messages"] = state.get("error_messages", []) + [
+                f"AI batch failed for {len(batch)} chunks"
+            ]
 
     logger.info("ai_batch: %d chunks -> %d total AI findings", len(chunks), len(all_findings))
-    return {"ai_findings": all_findings}
+    return {"ai_findings": all_findings, "unreviewed_files": state.get("unreviewed_files", [])}
 
 
 async def structural_review_chunk(state: ReviewState) -> dict[str, Any]:

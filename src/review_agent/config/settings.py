@@ -58,7 +58,9 @@ class AppSettings(BaseSettings):
     )
     ai_base_url: str = Field(default="https://api.deepseek.com", description="AI API 基础 URL")
     ai_api_key: str = Field(default="", description="AI API 密钥")
-    ai_request_timeout: int = Field(default=30, description="AI 请求超时（秒）")
+    ai_request_timeout: int = Field(default=120, description="AI 请求总超时（秒）")
+    ai_connect_timeout: int = Field(default=10, description="AI 请求连接超时（秒）")
+    ai_read_timeout: int = Field(default=120, description="AI 请求读取超时（秒，含模型推理时间）")
     ai_max_retries: int = Field(default=1, description="AI 请求最大重试次数")
     ai_review_max_tokens: int = Field(
         default=8192,

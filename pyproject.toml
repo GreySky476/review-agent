@@ -22,6 +22,7 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.49b0",
     "opentelemetry-instrumentation-httpx>=0.49b0",
     "opentelemetry-exporter-otlp-proto-http>=1.28.0",
+    "tree-sitter>=0.25.0",
     "langgraph>=1.2.4",
     "langgraph-checkpoint-postgres>=2.0.0",
 ]
