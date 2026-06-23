@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 
@@ -111,152 +110,62 @@ async def check_gitee(session: object) -> None:
         )
 
 
-async def check_project_webhooks(session: object) -> None:
-    """巡检所有活跃项目的 Webhook 连接状态。
-
-    对 webhook_enabled=True 的项目，通过 GitHub API 验证
-    webhook 是否仍有效配置，并更新状态。
-    """
-    from sqlalchemy import select
-
-    from review_agent.service.git.github_provider import GitHubProvider
-    from review_agent.types.orm import ProjectModel
-
-    logger.info("Starting project webhook health checks...")
-    try:
-        # 查询所有有 repo_url 的非删除项目（无论 webhook_enabled 状态）
-        stmt = select(ProjectModel).where(
-            ProjectModel.is_deleted.is_(False),
-            ProjectModel.repo_url.isnot(None),
-            ProjectModel.repo_url != "",
-        )
-        rows = await session.execute(stmt)  # type: ignore[arg-type]
-        projects = rows.scalars().all()
-
-        if not projects:
-            logger.debug("No projects with repo_url configured")
-            return
-
-        logger.info("Checking webhooks for %d projects", len(projects))
-        semaphore = asyncio.Semaphore(5)  # 最多 5 个并发
-
-        # 共享一个 GitHubProvider 实例（复用连接池，减少 SSL 重试日志）
-        git = GitHubProvider()
-        public_url = get_settings().public_url
-
-        async def _check_one(project: object) -> None:
-            async with semaphore:
-                p = project  # type: ignore[var-annotated]
-                repo_name = _extract_owner_repo(p.repo_url)  # type: ignore[attr-defined]
-                if not repo_name:
-                    return
-                try:
-                    webhook_url = f"{public_url}/webhook/{p.platform}"  # type: ignore[attr-defined]
-                    result = await git.check_webhook(repo_name, webhook_url)
-                    old_enabled = p.webhook_enabled  # type: ignore[attr-defined]
-                    new_enabled = result["found"]
-                    if old_enabled != new_enabled:
-                        p.webhook_enabled = new_enabled  # type: ignore[attr-defined]
-                        logger.info(
-                            "Webhook health: %s → webhook_enabled=%s (was %s)",
-                            repo_name,
-                            new_enabled,
-                            old_enabled,
-                        )
-                except Exception as exc:
-                    logger.debug("Webhook check skipped for %s: %s", repo_name, exc)
-
-        results = await asyncio.gather(
-            *[_check_one(p) for p in projects], return_exceptions=True
-        )
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                logger.error("Webhook check failed for project %d: %s", i, r)
-        await session.flush()  # type: ignore[arg-type]
-        changed = sum(1 for p in projects if p.webhook_enabled)  # type: ignore[attr-defined]
-        logger.info(
-            "Webhook health done: %d projects checked, %d connected",
-            len(projects),
-            changed,
-        )
-    except Exception as exc:
-        logger.error("Project webhook health check failed: %s", exc)
-
-
-def _extract_owner_repo(repo_url: str) -> str | None:
-    """从 repo_url 提取 owner/repo。"""
-    parts = repo_url.rstrip("/").split("/")
-    if len(parts) >= 2:
-        return "/".join(parts[-2:]).removesuffix(".git")
-    return None
-
-
 async def run_all_checks(session: object, webhook_check: bool = True) -> None:
-    """并发执行所有平台的连通性检测（含可选的 Webhook 巡检）。"""
+    """执行平台连通性检测，并根据结果同步项目 webhook 状态。"""
     logger.info("Starting platform health checks...")
-    tasks = [
-        check_github(session),
-        check_gitee(session),
-    ]
-    if webhook_check:
-        tasks.append(check_project_webhooks(session))
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for i, r in enumerate(results):
-        if isinstance(r, Exception):
-            task_name = getattr(tasks[i], "__name__", str(tasks[i]))
-            logger.error("Health check task %s failed: %s", task_name, r)
+    await check_github(session)
+    await check_gitee(session)
 
-
-# ── 后台周期任务 ──────────────────────────────────────────
-
-
-_periodic_task: asyncio.Task[None] | None = None
-
-
-async def _periodic_health_check(
-    platform_interval: int,
-    webhook_interval: int,
-) -> None:
-    """后台循环：定期执行平台 + Webhook 连通性检测。"""
-    from review_agent.config.database import async_session_factory
-
-    cycles = 0
-    webhook_cycles = max(1, webhook_interval // platform_interval)
-    while True:
-        cycles += 1
-        try:
-            async with async_session_factory() as session:  # type: ignore[arg-type]
-                await run_all_checks(session, webhook_check=(cycles % webhook_cycles == 0))
-                await session.commit()
-        except Exception:
-            logger.exception("Periodic health check failed")
-        await asyncio.sleep(platform_interval)
-
-
-def start_periodic_health_check(
-    interval_minutes: int = 15,
-) -> None:
-    """启动后台健康检查周期任务。
-
-    在 FastAPI 应用启动时调用，在事件循环中运行一个后台协程，
-    每隔 interval_minutes 分钟执行一次所有平台的连通性检测。
-
-    Args:
-        interval_minutes: 检测间隔（分钟）。
-    """
-    global _periodic_task  # noqa: PLW0603
-    if _periodic_task is not None and not _periodic_task.done():
-        logger.warning("Periodic health check already running, skipping")
+    if not webhook_check:
         return
 
-    settings = get_settings()
-    platform_seconds = max(60, interval_minutes * 60)
-    webhook_seconds = max(60, settings.webhook_health_interval_minutes * 60)
-    _periodic_task = asyncio.create_task(
-        _periodic_health_check(platform_seconds, webhook_seconds),
-    )
-    logger.info(
-        "Started periodic health check (platform=%dm webhook=%dm)",
-        interval_minutes,
-        settings.webhook_health_interval_minutes,
-    )
+    # 状态变化检测：只有平台状态发生切换时才同步项目
+    from sqlalchemy import select, update
+
+    from review_agent.repo.platform_health import PlatformHealthRepo
+    from review_agent.types.orm import ProjectModel
+
+    health_repo = PlatformHealthRepo(session)  # type: ignore[arg-type]
+    for platform_val, platform_enum in [("github", Platform.GITHUB), ("gitee", Platform.GITEE)]:
+        health = await health_repo.get(platform_enum)
+        if health is None:
+            continue
+        is_connected = health.status == "connected"
+
+        # 只查 ID 和 webhook_enabled，判断是否全部已同步
+        result = await session.execute(  # type: ignore[arg-type]
+            select(ProjectModel.id, ProjectModel.webhook_enabled).where(
+                ProjectModel.is_deleted.is_(False),
+                ProjectModel.platform == platform_val,
+            )
+        )
+        rows = result.all()
+        if not rows:
+            continue
+
+        # 所有项目已处于目标状态则跳过
+        all_synced = all(enabled == is_connected for _, enabled in rows)
+        if all_synced:
+            logger.debug(
+                "Health sync skipped: all %d %s projects already in target state",
+                len(rows), platform_val,
+            )
+            continue
+
+        # 只更新状态不一致的项目
+        changed = 0
+        for pid, enabled in rows:
+            if enabled != is_connected:
+                await session.execute(  # type: ignore[arg-type]
+                    update(ProjectModel)
+                    .where(ProjectModel.id == pid)
+                    .values(webhook_enabled=is_connected)
+                )
+                changed += 1
+        await session.flush()  # type: ignore[arg-type]
+        logger.info(
+            "Health sync: %d/%d %s projects updated to webhook_enabled=%s",
+            changed, len(rows), platform_val, is_connected,
+        )
+    logger.info("Health check done")
+

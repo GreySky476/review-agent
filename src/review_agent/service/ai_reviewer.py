@@ -112,6 +112,18 @@ class AIReviewer:
             user_parts.append(f"## Diff\n```diff\n{patch}\n```")
         user_prompt = "\n\n".join(user_parts)
 
+        # 估算总 prompt tokens（含 system prompt）
+        system_tokens = max(1, len(system_prompt) // 2)
+        total_estimated = system_tokens + (chunk.estimated_tokens or 0)
+        max_tokens = self._settings.ai_review_max_tokens
+        if total_estimated > max_tokens * 0.9:
+            logger.warning(
+                "Estimated tokens %d (system=%d + chunk=%d) approaching limit %d "
+                "for %s/%s, may cause timeout",
+                total_estimated, system_tokens, chunk.estimated_tokens,
+                max_tokens, chunk.file_path, chunk.function_name,
+            )
+
         request = AICompletionRequest(
             model=self._settings.ai_model_name,
             messages=[

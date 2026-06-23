@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import fnmatch
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from review_agent.repo.project import ProjectRepo
+from review_agent.types.enums import ReviewStatus
 from review_agent.types.orm import ProjectModel
 
 
@@ -150,3 +151,108 @@ class TestProjectRepoBranchSettings:
         result = await repo.update_settings("proj-123", review_branches=["release/*"])
         assert result.get("existing_key") == "value"
         assert result.get("review_branches") == ["release/*"]
+
+
+class TestTriggerPrReviewCreateOrGet:
+    """测试 trigger_pr_review 中使用 create_or_get 原子创建。"""
+
+    @pytest.mark.asyncio
+    async def test_trigger_pr_review_create_or_get_new(self, db) -> None:
+        """新评审应调用 create_or_get 并返回 is_new=True，继续入队。"""
+        from review_agent.api.webhook_helpers import trigger_pr_review
+
+        review_mock = MagicMock()
+        review_mock.id = "review-456"
+
+        with (
+            patch("review_agent.api.webhook_helpers.PullRequestRepo") as mock_pr_repo_cls,
+            patch("review_agent.api.webhook_helpers.ReviewRepo") as mock_review_repo_cls,
+            patch("review_agent.api.webhook_helpers.GitHubProvider") as mock_github_cls,
+            patch(
+                "review_agent.api.webhook_helpers.enqueue_pr_review",
+                new_callable=AsyncMock,
+            ) as mock_enqueue,
+        ):
+            mock_pr_repo = MagicMock()
+            mock_pr_repo.get_by_pr_number = AsyncMock(
+                return_value=MagicMock(title="Add login feature"),
+            )
+            mock_pr_repo_cls.return_value = mock_pr_repo
+
+            mock_github = MagicMock()
+            mock_github.get_pr_diff = AsyncMock(
+                return_value=[MagicMock(filename="login.py", status="modified")],
+            )
+            mock_github_cls.return_value = mock_github
+
+            mock_review_repo = MagicMock()
+            mock_review_repo.create_or_get = AsyncMock(return_value=(review_mock, True))
+            mock_review_repo.get_latest_completed_by_pr = AsyncMock(return_value=None)
+            mock_review_repo_cls.return_value = mock_review_repo
+
+            mock_enqueue.return_value = "task-789"
+
+            await trigger_pr_review(
+                db=db,
+                project_id="proj-123",
+                repo_full_name="test/repo",
+                pr_head_sha="abc123def456",
+                pr_number=42,
+            )
+
+            mock_review_repo.create_or_get.assert_awaited_once_with(
+                project_id="proj-123",
+                pr_number=42,
+                head_sha="abc123def456",
+                pr_title="Add login feature",
+                status=ReviewStatus.PENDING,
+                task_id=None,
+            )
+            mock_enqueue.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_trigger_pr_review_create_or_get_existing(self, db) -> None:
+        """已有评审应返回 is_new=False 并跳过，不入队。"""
+        from review_agent.api.webhook_helpers import trigger_pr_review
+
+        existing_review = MagicMock()
+        existing_review.id = "existing-789"
+
+        with (
+            patch("review_agent.api.webhook_helpers.PullRequestRepo") as mock_pr_repo_cls,
+            patch("review_agent.api.webhook_helpers.ReviewRepo") as mock_review_repo_cls,
+            patch("review_agent.api.webhook_helpers.GitHubProvider") as mock_github_cls,
+            patch(
+                "review_agent.api.webhook_helpers.enqueue_pr_review",
+                new_callable=AsyncMock,
+            ) as mock_enqueue,
+        ):
+            mock_pr_repo = MagicMock()
+            mock_pr_repo.get_by_pr_number = AsyncMock(
+                return_value=MagicMock(title="Add login feature"),
+            )
+            mock_pr_repo_cls.return_value = mock_pr_repo
+
+            mock_github = MagicMock()
+            mock_github.get_pr_diff = AsyncMock(
+                return_value=[MagicMock(filename="login.py", status="modified")],
+            )
+            mock_github_cls.return_value = mock_github
+
+            mock_review_repo = MagicMock()
+            mock_review_repo.create_or_get = AsyncMock(return_value=(existing_review, False))
+            mock_review_repo.get_latest_completed_by_pr = AsyncMock(return_value=None)
+            mock_review_repo_cls.return_value = mock_review_repo
+
+            mock_enqueue.return_value = "task-789"
+
+            await trigger_pr_review(
+                db=db,
+                project_id="proj-123",
+                repo_full_name="test/repo",
+                pr_head_sha="abc123def456",
+                pr_number=42,
+            )
+
+            mock_review_repo.create_or_get.assert_awaited_once()
+            mock_enqueue.assert_not_awaited()

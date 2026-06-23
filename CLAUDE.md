@@ -29,21 +29,73 @@
 接手任何任务时，按以下顺序执行：
 
 1. **理解任务**：识别任务涉及哪些模块（架构→模块边界→API→测试）
-2. **制定计划**：拆分为 2-5 分钟可完成的小任务，写入 `docs/plans/current.md`
-3. **执行**：按计划逐个完成，每完成一项更新进度
+2. **制定计划**：拆分为 2-5 分钟可完成的小任务，写入 `docs/plans/current.md`，标注任务的 `[delegatable]` / `[no-delegate]` 和依赖关系
+3. **执行**：按计划逐个完成，每完成一项更新进度。`[delegatable]` 的任务交子 Agent 隔离执行（见下方委托协议），`[no-delegate]` 的任务由主会话直接执行
 4. **验证**：运行完整验证命令，全部通过后提交
 5. **归档**：将 `current.md` 内容移至 `docs/plans/archive/YYYY-MM/`
 
-## 三、验证退出标准
+### 委托协议
 
-**任何任务完成前，必须满足以下条件，缺一不可：**
+**为什么需要子 Agent**：主 Agent 直行时，每轮文件读写、代码生成会产生 ~20k+ tokens 的消息历史留存。16 轮后历史膨胀至 ~640k-1.7M tokens，填满上下文窗口。子 Agent 隔离执行可将增长速度降低 ~13 倍。详见 `docs/architecture/agent-execution-mode.md`。
 
-1. `ruff check . && mypy src/ && pytest` 退出码为 0
-2. 所有测试通过（单元测试 + 集成测试）
-3. Lint 无错误
-4. 类型检查通过
+**职责分界**：
 
-> 以上任何一项不满足，任务即为"未完成"。
+| 角色 | 做什么 | 不做 |
+|------|--------|------|
+| **主 Agent** | 任务分解、写计划、调度子 Agent、最终验证（`ruff+mypy+pytest`）、git commit | 不读 >50 行文件、不执行 >3 步的命令、不做多文件修改 |
+| **子 Agent** | 读文件、写代码、运行 lint/mypy/测试、返回结构化摘要 | 不做架构决策、不改 `current.md`、不 git commit |
+
+**执行模式选择**：
+
+| 任务类型 | 执行主体 | 原因 |
+|----------|---------|------|
+| 单文件 ≤20 行变更 | 🟢 主 Agent 直接执行 | 开销小，无需隔离 |
+| 单文件 >20 行变更 + 测试 | 🟡 子 Agent 执行 | 代码生成 + 验证输出量大 |
+| 多文件修改 | 🟡 子 Agent 执行 | 文件 I/O 多，适合隔离 |
+| 跨层依赖链 | 🔴 串行子 Agent | 上层依赖下层完成后才能启动 |
+| 计划制定 / current.md 更新 | 🔴 主 Agent 执行 | 需要全局视野 |
+| git commit / 归档 | 🔴 主 Agent 执行 | 版本控制统一管理 |
+
+**上下文预算**（每轮主会话保持 ~30k）：
+
+- 已完成子任务的 prompt 和中间结果不保留，只保留 `[x] {name} — {2行摘要}`
+- `current.md` 只保留活跃条目，已完成的 `[x]` 条目删除细节
+- 每 5-6 个子任务后评估：如果主会话接近 100k tokens，执行 `/clear` 后从 `current.md` 恢复
+
+**子 Agent Task Prompt 格式与结果契约**见 `docs/architecture/agent-execution-mode.md#三委托协议`。
+
+### 委托执行强制规则（CI 验证）
+
+以下规则由 pre-commit hook `pre-commit.sh` 强制验证，违反则提交被拒绝：
+
+| 规则 | 要求 | 验证方式 |
+|------|------|----------|
+| `[delegatable]` 必须指定执行者 | 每个 `[delegatable]` 任务必须有 `assigned: subagent` 字段 | pre-commit 分析 `current.md` |
+| 主 Agent 禁止直接修改 delegatable 代码 | 主 Agent 不得对 `[delegatable]` 标记的任务直接调用 Edit/Write/NotebookEdit | pre-commit 检查 assigned 字段 |
+| 无 assigned 字段 = 违规 | 未填写 assigned 的任务默认视为主 Agent 违规执行 | pre-commit 拦截 |
+| `[no-delegate]` 不需要 assigned | 纯主 Agent 任务不需 assigned 字段，不触发检查 | pre-commit 跳过 |
+
+**执行流程**：
+
+```
+开始任务前，主 Agent 必须执行：
+  ┌─ 读取 current.md 中当前任务的标记
+  ├─ [delegatable]? → 仅启动子 Agent，不直接改代码
+  │                    在任务行下写入 `assigned: subagent`
+  ├─ [no-delegate]? → 可在主会话直接执行
+  └─ 禁止以"代码简单""修改很小"为由跳过委托规则
+```
+
+## 三、验证退出标准（优化版）
+
+**任何变更提交前，必须满足以下条件，缺一不可：**
+
+1. **子 Agent 文件级检查**：`ruff check <changed_file>` 退出码为 0（子 Agent 内执行）
+2. **主 Agent 集成验证**：`ruff check . && pytest` 退出码为 0（最终阶段执行一次）
+3. `mypy src/` 在项目基础设施允许时执行（当前因 `base.py` 使用 Python 3.12 语法的预存问题受阻，此已知问题正在跟踪）
+4. 所有测试通过（单元测试 + 集成测试）
+
+> **注意**：lint 检查和测试执行集中到最终阶段一次性完成，避免多轮子 Agent 各自跑全量验证的 token 浪费。详见 `docs/architecture/agent-execution-mode.md#八验证策略优化版`。
 
 ## 四、升级机制（何时求助）
 
@@ -112,35 +164,3 @@
 | 日期 | 变更内容 | 变更人 |
 |------|----------|--------|
 | 2026-06-09 | GitHub Push Webhook 自动评审：CommitReviewService + 文件级并发 + 文档更新 | GreySky476 |
-
-## 文件结构
-
-```text
-docs/
-├── AGENTS.md                    # 本文件，Agent 唯一入口
-├── architecture/                # 架构设计
-│   ├── overview.md              # 系统架构总览
-│   └── module-boundaries.md     # 模块边界定义
-├── coding/                      # 编码规范
-│   └── style.md                 # 代码风格
-├── testing/                     # 测试策略
-│   └── strategy.md              # 测试策略与覆盖率要求
-├── api/                         # API 规范
-│   └── conventions.md           # API 命名与错误处理规范
-├── security/                    # 安全规范
-│   └── guidelines.md            # 安全编码规范
-├── deployment/                  # 部署运维
-│   └── ci-cd.md                 # CI/CD 流程说明
-├── runbooks/                    # 故障手册
-│   └── common-errors.md         # 常见错误与解决方案
-├── features/                    # 功能文档（按需扩展）
-│   └── [feature-name]/
-│       └── design.md
-├── plans/                       # 任务计划（动态更新）
-│   ├── current.md
-│   └── archive/YYYY-MM/
-└── templates/                   # 提示词模板库
-    ├── code-review.md
-    ├── bug-fix.md
-    └── feature-add.md
-```

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import traceback
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -51,12 +52,18 @@ async def list_commits(
         count_filters["author"] = author
     total = await repo.count(filters=count_filters)
 
-    # 查询每个 commit 的最新 review
+    # 查询每个 commit 的最新 review（含 score 和 reviewed_files）
     sha_list = [c.sha for c in items if c.sha]
     review_map: dict[str, dict[str, Any]] = {}
     if sha_list:
         review_rows = await db.execute(
-            select(ReviewModel.id, ReviewModel.head_sha, ReviewModel.status).where(
+            select(
+                ReviewModel.id,
+                ReviewModel.head_sha,
+                ReviewModel.status,
+                ReviewModel.score,
+                ReviewModel.reviewed_files,
+            ).where(
                 ReviewModel.head_sha.in_(sha_list),
                 ReviewModel.project_id == project_id,
                 ReviewModel.is_deleted.is_(False),
@@ -64,7 +71,19 @@ async def list_commits(
         )
         for r in review_rows.all():
             if r.head_sha not in review_map:
-                review_map[r.head_sha] = {"review_id": r.id, "review_status": r.status}
+                # 从 reviewed_files 推导严重级别统计
+                breakdown: dict[str, int] = {"critical": 0, "warning": 0, "info": 0}
+                if r.reviewed_files:
+                    for f in r.reviewed_files:
+                        sev = f.get("max_severity")
+                        if sev in breakdown:
+                            breakdown[sev] += 1
+                review_map[r.head_sha] = {
+                    "review_id": r.id,
+                    "review_status": r.status,
+                    "review_score": r.score,
+                    "severity_breakdown": breakdown if any(breakdown.values()) else None,
+                }
 
     return {
         "items": [
@@ -78,6 +97,8 @@ async def list_commits(
                 "is_reviewed": c.is_reviewed or (c.sha in review_map),
                 "review_id": review_map.get(c.sha, {}).get("review_id"),
                 "review_status": review_map.get(c.sha, {}).get("review_status"),
+                "review_score": review_map.get(c.sha, {}).get("review_score"),
+                "severity_breakdown": review_map.get(c.sha, {}).get("severity_breakdown"),
                 "create_time": c.create_time.isoformat() if c.create_time else None,
             }
             for c in items
@@ -93,7 +114,6 @@ async def trigger_commit_review(
     project_id: str,
     sha: str,
     force: bool = Query(False, description="强制重新评审"),
-    skip_levels: str = Query("", description="跳过的严重级别，逗号分隔"),
     db: AsyncSession = Depends(get_session),
 ) -> Any:
     """触发单次提交评审。
@@ -169,43 +189,36 @@ async def trigger_commit_review(
             "commit_found": True, "reason": "no_changed_files",
         }
 
-    # 4. 加载上一轮 reviewed_files
-    previous_review_id: str | None = None
-    previous_reviewed_files: list[dict] = []
-    try:
-        prev_review = await ReviewRepo(db).get_by_head_sha(sha)
-        if prev_review and prev_review.reviewed_files:
-            previous_review_id = prev_review.id
-            previous_reviewed_files = prev_review.reviewed_files
-            logger.info(
-                "Loaded previous review %s: %d files",
-                prev_review.id[:8], len(previous_reviewed_files),
-            )
-    except Exception:
-        logger.debug("Failed to load previous review: %s", exc_info=True)
+    # 4. 获取 commit message 作为评审标题
+    commit_obj = await CommitRepo(db).get_by_sha(project_id, sha)
+    commit_message = (
+        commit_obj.message[:80] if commit_obj and commit_obj.message
+        else f"Commit {sha[:8]}"
+    )
 
     # 5. 创建评审记录
     review = await ReviewRepo(db).create(
         project_id=project_id,
         pr_number=None,
-        pr_title=f"Commit {sha[:8]}",
+        pr_title=commit_message,
         head_sha=sha,
         status=ReviewStatus.PENDING,
         task_id=None,
     )
     logger.info("Review record created: id=%s sha=%s", review.id, sha)
 
-    # 6. 入队（含增量上下文）
-    task_id = await enqueue_commit_review(
-        project_id=project_id,
-        repo_name=repo_name,
-        sha=sha,
-        changed_files=changed_files,
-        review_id=review.id,
-        previous_review_id=previous_review_id,
-        previous_reviewed_files=previous_reviewed_files,
-        skip_levels=skip_levels,
-    )
+    # 6. 入队
+    try:
+        task_id = await enqueue_commit_review(
+            project_id=project_id,
+            repo_name=repo_name,
+            sha=sha,
+            changed_files=changed_files,
+            review_id=review.id,
+        )
+    except Exception:
+        logger.warning("Failed to enqueue commit review: %s", traceback.format_exc())
+        task_id = None
 
     if task_id:
         review.task_id = task_id

@@ -68,11 +68,6 @@ const statusLabel: Record<string, { label: string; variant: 'success' | 'warning
   completed_with_errors: { label: '已完成（有异常）', variant: 'warning' },
 }
 
-function severityBadgeColor(sev: string | null): 'error' | 'warning' | 'success' {
-  if (sev === 'critical') return 'error'
-  if (sev === 'warning') return 'warning'
-  return 'success'
-}
 
 function TimelineEntry({
   commit,
@@ -164,13 +159,18 @@ function TimelineEntry({
 
       {/* Severity breakdown */}
       {hasIssues && (
-        <div className="mt-2 ml-5 flex flex-wrap gap-2">
-          {reviewedFiles.filter((f) => f.max_severity !== null).map((f) => (
-            <Badge key={f.path} variant={severityBadgeColor(f.max_severity)}>
-              <span className={f.max_severity === 'critical' ? 'text-error' : f.max_severity === 'warning' ? 'text-warning' : 'text-success'}>●</span>
-              {' '}{f.path.split('/').pop()} — {f.max_severity?.toUpperCase()}
-            </Badge>
-          ))}
+        <div className="mt-2 ml-5 flex flex-wrap gap-1.5">
+          {[
+            { key: 'critical', label: 'C', count: reviewedFiles.filter((f) => f.max_severity === 'critical').length, color: 'bg-error text-white' },
+            { key: 'warning', label: 'W', count: reviewedFiles.filter((f) => f.max_severity === 'warning').length, color: 'bg-warning text-white' },
+            { key: 'info', label: 'I', count: reviewedFiles.filter((f) => f.max_severity === 'info').length, color: 'bg-info text-white' },
+          ].map(({ key, label, count, color }) =>
+            count > 0 ? (
+              <span key={key} className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs font-medium ${color}`}>
+                {label} {count}
+              </span>
+            ) : null,
+          )}
         </div>
       )}
     </div>

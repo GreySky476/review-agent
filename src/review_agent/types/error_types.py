@@ -39,6 +39,9 @@ class ErrorType(StrEnum):
     QUEUE_ENQUEUE_FAILED = "queue_enqueue_failed"
     """评审任务入队失败（ARQ 队列异常）。"""
 
+    ARQ_JOB_FAILED = "arq_job_failed"
+    """ARQ Worker 任务最终失败（所有重试耗尽）。"""
+
     DB_WRITE_FAILED = "db_write_failed"
     """数据库持久化写入失败。"""
 

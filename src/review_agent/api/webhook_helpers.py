@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import fnmatch
 import hashlib
 import hmac
 import logging
+import traceback
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +24,7 @@ from review_agent.service.error_logger import log_error
 from review_agent.service.git.github_provider import GitHubProvider
 from review_agent.service.queue import enqueue_commit_review, enqueue_pr_review
 from review_agent.types.enums import EventAction, Platform, ReviewStatus
+from review_agent.types.orm import ProjectModel
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +44,11 @@ async def ensure_project_connected(
     pr_number: int,
     raw_payload: str,
 ) -> str | None:
-    """查找项目，标记 webhook 已连接，并记录事件。返回 project_id 或 None。"""
+    """查找项目并记录 Webhook 事件。返回 project_id 或 None。
+
+    注意：此函数不修改 project 状态（只读查找）。
+    若要标记 webhook 已连接，请调用 mark_webhook_connected()。
+    """
     if not repo_full_name:
         return None
     domain = _PLATFORM_DOMAINS.get(platform)
@@ -62,6 +69,14 @@ async def ensure_project_connected(
         await db.flush()
         logger.info("Marked project %s webhook as connected", project.id)
     event_repo = WebhookEventRepo(db)
+
+    # 事件去重：同一 event_id 在去重窗口内已处理过则跳过
+    from review_agent.config.settings import get_settings
+
+    if await event_repo.exists_in_window(event_id, get_settings().webhook_dedup_window):
+        logger.debug("Duplicate webhook event %s, skipping", event_id[:8])
+        return project.id
+
     await event_repo.create_from_payload(
         project_id=project.id,
         platform=platform.value,
@@ -71,6 +86,14 @@ async def ensure_project_connected(
         raw_payload=raw_payload,
     )
     return project.id  # type: ignore[no-any-return]
+
+
+async def mark_webhook_connected(project: ProjectModel, db: AsyncSession) -> None:
+    """将 project 标记为 webhook 已连接。"""
+    if not project.webhook_enabled:
+        project.webhook_enabled = True
+        await db.flush()
+        logger.info("Marked project %s webhook as connected", project.id)
 
 
 async def handle_push_event(
@@ -148,21 +171,45 @@ async def handle_push_event(
             committed_at=committed_at,
         )
     review_repo = ReviewRepo(db)
-    review = await review_repo.create(
+    review, is_new = await review_repo.create_or_get(
         project_id=project.id,
         pr_number=None,
-        pr_title=f"Push {branch}: {sha[:8]}",
         head_sha=sha,
+        pr_title=f"Push {branch}: {sha[:8]}",
         status=ReviewStatus.PENDING,
         task_id=None,
     )
-    task_id = await enqueue_commit_review(
-        project_id=project.id,
-        repo_name=repo_full_name,
-        sha=sha,
-        changed_files=changed_files,
-        review_id=review.id,
-    )
+    if not is_new:
+        logger.info(
+            "Commit %s already has a review %s, skipping push review",
+            sha[:8],
+            review.id[:8],
+        )
+        return {"status": "accepted", "sha": sha, "task_id": ""}
+    # 入队（含重试，指数退避 1s, 2s）
+    task_id = None
+    for attempt in range(3):
+        try:
+            task_id = await enqueue_commit_review(
+                project_id=project.id,
+                repo_name=repo_full_name,
+                sha=sha,
+                changed_files=changed_files,
+                review_id=review.id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to enqueue commit review for %s (attempt %d/3): %s",
+                sha, attempt + 1, traceback.format_exc(),
+            )
+        if task_id:
+            break
+        if attempt < 2:
+            logger.warning(
+                "Enqueue commit review for %s failed, retrying (%d/3)...",
+                sha, attempt + 1,
+            )
+            await asyncio.sleep(2 ** attempt)  # 1s, 2s
     if task_id:
         review.task_id = task_id
         await db.flush()
@@ -197,20 +244,6 @@ async def trigger_pr_review(
             pr_title = pr_record.title
     except Exception:
         logger.debug("trigger_pr_review: failed to load PR title", exc_info=True)
-
-    # SHA 去重检查（只拦截已完成评审的 SHA，失败/进行中不拦截）
-    try:
-        existing = await ReviewRepo(db).get_completed_by_sha(
-            project_id, pr_number, pr_head_sha
-        )
-        if existing:
-            logger.info(
-                "SHA %s for PR #%d already has completed review %s, skipping webhook",
-                pr_head_sha[:8], pr_number, existing.id[:8],
-            )
-            return
-    except Exception:
-        logger.debug("Failed to check SHA dedup: %s", exc_info=True)
 
     try:
         git = GitHubProvider()
@@ -257,8 +290,7 @@ async def trigger_pr_review(
                 prev_findings = await FindingRepo(db).list_by_review(prev_review.id)
                 previous_file_paths = list({f.file_path for f in prev_findings})
                 previous_reviewed_files = [
-                    {"path": f.file_path, "max_severity": f.severity}
-                    for f in prev_findings
+                    {"path": f.file_path, "max_severity": f.severity} for f in prev_findings
                 ]
             logger.info(
                 "trigger_pr_review: previous review found: id=%s sha=%s files=%d",
@@ -269,17 +301,25 @@ async def trigger_pr_review(
     except Exception:
         logger.debug("trigger_pr_review: failed to load previous review context", exc_info=True)
 
-    # 创建评审记录
+    # 原子创建评审记录（利用数据库唯一约束防止重复）
     review_repo = ReviewRepo(db)
     review_status = ReviewStatus.PENDING if all_files else ReviewStatus.FAILED
-    review = await review_repo.create(
+    review, is_new = await review_repo.create_or_get(
         project_id=project_id,
         pr_number=pr_number,
-        pr_title=pr_title,
         head_sha=pr_head_sha,
+        pr_title=pr_title,
         status=review_status,
         task_id=None,
     )
+    if not is_new:
+        logger.info(
+            "SHA %s for PR #%d already has review %s, skipping",
+            pr_head_sha[:8],
+            pr_number,
+            review.id[:8],
+        )
+        return
     logger.info(
         "trigger_pr_review: review created: id=%s status=%s pr_title='%s'",
         review.id,
@@ -297,19 +337,29 @@ async def trigger_pr_review(
         await db.flush()
         return
 
-    # 入队
-    task_id = await enqueue_pr_review(
-        project_id=project_id,
-        repo_name=repo_full_name,
-        sha=pr_head_sha,
-        pr_number=pr_number,
-        all_files=all_files,
-        review_id=review.id,
-        previous_review_id=previous_review_id,
-        last_reviewed_sha=last_reviewed_sha,
-        previous_file_paths=previous_file_paths,
-        previous_reviewed_files=previous_reviewed_files,
-    )
+    # 入队（含重试，指数退避 1s, 2s）
+    task_id = None
+    for attempt in range(3):
+        task_id = await enqueue_pr_review(
+            project_id=project_id,
+            repo_name=repo_full_name,
+            sha=pr_head_sha,
+            pr_number=pr_number,
+            all_files=all_files,
+            review_id=review.id,
+            previous_review_id=previous_review_id,
+            last_reviewed_sha=last_reviewed_sha,
+            previous_file_paths=previous_file_paths,
+            previous_reviewed_files=previous_reviewed_files,
+        )
+        if task_id:
+            break
+        if attempt < 2:
+            logger.warning(
+                "trigger_pr_review: enqueue failed for PR #%d, retrying (%d/3)...",
+                pr_number, attempt + 1,
+            )
+            await asyncio.sleep(2 ** attempt)  # 1s, 2s
     if task_id:
         review.task_id = task_id
         await db.flush()

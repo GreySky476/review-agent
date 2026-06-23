@@ -18,14 +18,10 @@ from review_agent.service.chunking import CodeChunk
 from review_agent.service.dimensions.base import (
     DimensionFinding,
 )
-from review_agent.service.review_graph.edges import fanout_to_dimensions, route_chunks
+from review_agent.service.review_graph.edges import route_chunks
 from review_agent.service.review_graph.evaluation import (
-    ai_review_chunk,
-    run_bug_rules,
-    run_dependency_rules,
-    run_performance_rules,
-    run_security_rules,
-    run_style_rules,
+    run_ai_batch,
+    run_all_rules,
     structural_review_chunk,
 )
 from review_agent.service.review_graph.graph import build_review_graph
@@ -108,6 +104,40 @@ def finding() -> DimensionFinding:
     )
 
 
+@pytest.fixture
+def small_chunks() -> list[CodeChunk]:
+    """Multiple small chunks that should all route to AI review."""
+    return [
+        CodeChunk(
+            file_path="test.py",
+            function_name=f"func_{i}",
+            source_code=f"def func_{i}(): pass",
+            start_line=i * 10 + 1,
+            end_line=i * 10 + 2,
+            estimated_tokens=30,
+            path=ChunkPath.DETAILED_REVIEW,
+        )
+        for i in range(5)
+    ]
+
+
+@pytest.fixture
+def large_chunks() -> list[CodeChunk]:
+    """Multiple oversized chunks that should all route to structural review."""
+    return [
+        CodeChunk(
+            file_path="big.py",
+            function_name=f"big_func_{i}",
+            source_code="x = 1\n" * 5000,
+            start_line=1,
+            end_line=5000,
+            estimated_tokens=1667,
+            path=ChunkPath.STRUCTURAL_REVIEW,
+        )
+        for i in range(3)
+    ]
+
+
 # ─── Test: Reducer ─────────────────────────────────────────
 
 
@@ -116,32 +146,17 @@ class TestReduceFindings:
         assert _merge_lists(None, None) == []
 
     def test_existing_none(self) -> None:
-        result = _merge_lists(
-            None,
-            [
-                DimensionFinding(
-                    category=FindingCategory.BUG,
-                    severity=FindingSeverity.INFO,
-                    title="t",
-                    description="d",
-                    suggestion="s",
-                    file_path="f",
-                )
-            ],
-        )
+        result = _merge_lists(None, [DimensionFinding(
+            category=FindingCategory.BUG, severity=FindingSeverity.INFO,
+            title="t", description="d", suggestion="s", file_path="f",
+        )])
         assert len(result) == 1
 
     def test_updates_none(self) -> None:
-        existing = [
-            DimensionFinding(
-                category=FindingCategory.BUG,
-                severity=FindingSeverity.INFO,
-                title="t",
-                description="d",
-                suggestion="s",
-                file_path="f",
-            )
-        ]
+        existing = [DimensionFinding(
+            category=FindingCategory.BUG, severity=FindingSeverity.INFO,
+            title="t", description="d", suggestion="s", file_path="f",
+        )]
         result = _merge_lists(existing, None)
         assert len(result) == 1
 
@@ -216,49 +231,33 @@ class TestPublishResults:
 
 
 class TestRuleNodes:
-    """验证 5 个规则节点在空 chunks 时返回空，有代码时返回 findings。"""
+    """使用 run_all_rules 验证规则节点返回 findings。"""
 
-    @pytest.mark.parametrize(
-        "node_fn",
-        [
-            run_security_rules,
-            run_bug_rules,
-            run_performance_rules,
-            run_style_rules,
-            run_dependency_rules,
-        ],
-    )
-    async def test_empty_chunks(self, base_state: ReviewState, node_fn) -> None:
+    async def test_empty_chunks(self, base_state: ReviewState) -> None:
         base_state["chunks"] = []
-        result = await node_fn(base_state)
+        result = await run_all_rules(base_state)
         assert result["rule_findings"] == []
 
     async def test_security_detects_eval(self, base_state: ReviewState) -> None:
         chunk = CodeChunk(
-            file_path="src/bad.py",
-            function_name="hack",
+            file_path="src/bad.py", function_name="hack",
             source_code="def hack():\n    eval('danger')\n",
-            start_line=1,
-            end_line=3,
-            estimated_tokens=20,
+            start_line=1, end_line=3, estimated_tokens=20,
             path=ChunkPath.DETAILED_REVIEW,
         )
         base_state["chunks"] = [chunk]
-        result = await run_security_rules(base_state)
+        result = await run_all_rules(base_state)
         assert any("eval" in f.title for f in result["rule_findings"])
 
     async def test_bug_detects_bare_except(self, base_state: ReviewState) -> None:
         chunk = CodeChunk(
-            file_path="src/bad.py",
-            function_name="danger",
+            file_path="src/bad.py", function_name="danger",
             source_code="def danger():\n    try:\n        pass\n    except:\n        pass\n",
-            start_line=1,
-            end_line=5,
-            estimated_tokens=20,
+            start_line=1, end_line=5, estimated_tokens=20,
             path=ChunkPath.DETAILED_REVIEW,
         )
         base_state["chunks"] = [chunk]
-        result = await run_bug_rules(base_state)
+        result = await run_all_rules(base_state)
         assert any("except" in f.title for f in result["rule_findings"])
 
 
@@ -274,59 +273,92 @@ class TestStructuralReview:
         assert isinstance(result["structural_findings"], list)
 
 
-class TestAiReview:
+class TestAiBatch:
     async def test_no_chunk(self, base_state: ReviewState) -> None:
-        result = await ai_review_chunk(base_state, ai_provider=None)
+        result = await run_ai_batch(base_state, ai_provider=None)
         assert result["ai_findings"] == []
 
     async def test_no_provider(self, base_state: ReviewState, normal_chunk) -> None:
-        base_state["pending_chunk"] = normal_chunk
-        result = await ai_review_chunk(base_state, ai_provider=None)
+        base_state["pending_ai_chunks"] = [normal_chunk]
+        result = await run_ai_batch(base_state, ai_provider=None)
         assert result["ai_findings"] == []
 
 
 # ─── Test: Edges ────────────────────────────────────────────
 
 
-class TestFanoutToDimensions:
-    def test_returns_five_sends(self, base_state: ReviewState) -> None:
-        result = fanout_to_dimensions(base_state)
-        assert len(result) == 5
-        names = [s.node for s in result]
-        assert "run_security_rules" in names
-        assert "run_bug_rules" in names
-        assert "run_performance_rules" in names
-        assert "run_style_rules" in names
-        assert "run_dependency_rules" in names
-
-
 class TestRouteChunks:
     def test_no_chunks_routes_to_aggregate(self, base_state: ReviewState) -> None:
         result = route_chunks(base_state)
-        assert len(result) == 1
-        assert result[0].node == "aggregate"
+        assert result == "aggregate"
 
     def test_normal_chunk_routes_to_ai(self, base_state: ReviewState, normal_chunk) -> None:
         base_state["chunks"] = [normal_chunk]
         result = route_chunks(base_state)
         assert len(result) == 1
-        assert result[0].node == "ai_review"
+        assert result[0].node == "ai_batch"
 
-    def test_oversized_chunk_routes_to_structural(
-        self, base_state: ReviewState, oversized_chunk
-    ) -> None:
+    def test_oversized_chunk_routes_to_structural(self, base_state, oversized_chunk) -> None:
         base_state["chunks"] = [oversized_chunk]
         result = route_chunks(base_state)
         assert len(result) == 1
-        assert result[0].node == "structural_review"
+        assert result[0].node == "structural_batch"
 
     def test_mixed_chunks(self, base_state: ReviewState, normal_chunk, oversized_chunk) -> None:
         base_state["chunks"] = [normal_chunk, oversized_chunk]
         result = route_chunks(base_state)
         assert len(result) == 2
         nodes = [s.node for s in result]
-        assert "ai_review" in nodes
-        assert "structural_review" in nodes
+        assert "ai_batch" in nodes
+        assert "structural_batch" in nodes
+
+
+# ─── Test: AI Batch / Chunk Grouping ─────────────────────────
+
+
+class TestAiBatchBatching:
+    """验证 chunks 的正确路由分组逻辑（per-chunk 架构下等同于批量分组）。"""
+
+    async def test_no_provider_skips_ai_review(
+        self, base_state: ReviewState, normal_chunk: CodeChunk,
+    ) -> None:
+        """无 AI provider 时 AI 评审跳过，不崩溃。"""
+        base_state["pending_ai_chunks"] = [normal_chunk]
+        result = await run_ai_batch(base_state, ai_provider=None)
+        assert result["ai_findings"] == []
+
+    def test_small_chunks_all_route_to_ai(
+        self, base_state: ReviewState, small_chunks: list[CodeChunk],
+    ) -> None:
+        """多个小 chunk 合并为单个 ai_batch Send。"""
+        base_state["chunks"] = small_chunks
+        result = route_chunks(base_state)
+        assert len(result) == 1
+        assert result[0].node == "ai_batch"
+        assert len(result[0].arg["pending_ai_chunks"]) == len(small_chunks)
+
+    def test_large_chunks_all_route_to_structural(
+        self, base_state: ReviewState, large_chunks: list[CodeChunk],
+    ) -> None:
+        """多个大 chunk 合并为单个 structural_batch Send。"""
+        base_state["chunks"] = large_chunks
+        result = route_chunks(base_state)
+        assert len(result) == 1
+        assert result[0].node == "structural_batch"
+        assert len(result[0].arg["pending_structural_chunks"]) == len(large_chunks)
+
+    def test_mixed_routes_correctly(
+        self, base_state: ReviewState, small_chunks: list[CodeChunk],
+        large_chunks: list[CodeChunk],
+    ) -> None:
+        """混合 chunk 分流为 ai_batch 和 structural_batch 两个 Send。"""
+        all_chunks = small_chunks + large_chunks
+        base_state["chunks"] = all_chunks
+        result = route_chunks(base_state)
+        assert len(result) == 2
+        nodes = [s.node for s in result]
+        assert "ai_batch" in nodes
+        assert "structural_batch" in nodes
 
 
 # ─── Test: Graph Compilation ───────────────────────────────
@@ -337,23 +369,18 @@ class TestGraphCompilation:
         """验证图能成功编译并包含所有预期节点。"""
 
         class MockGit:
-            async def get_file_content(self, *_: Any, **__: Any) -> str | None:
+            async def get_file_content(self, *_args: Any, **_kwargs: Any) -> str | None:
                 return None
-
-            async def publish_commit_summary(self, *_: Any, **__: Any) -> None:
+            async def publish_commit_summary(self, *_args: Any, **_kwargs: Any) -> None:
                 pass
 
         graph = build_review_graph(git_provider=MockGit(), ai_provider=None)
         assert graph is not None
         assert "filter_files" in graph.nodes
         assert "fetch_and_chunk" in graph.nodes
-        assert "run_security_rules" in graph.nodes
-        assert "run_bug_rules" in graph.nodes
-        assert "run_performance_rules" in graph.nodes
-        assert "run_style_rules" in graph.nodes
-        assert "run_dependency_rules" in graph.nodes
-        assert "ai_review" in graph.nodes
-        assert "structural_review" in graph.nodes
+        assert "run_all_rules" in graph.nodes
+        assert "ai_batch" in graph.nodes
+        assert "structural_batch" in graph.nodes
         assert "dispatch_chunks" in graph.nodes
         assert "aggregate" in graph.nodes
         assert "summarize" in graph.nodes
@@ -363,10 +390,9 @@ class TestGraphCompilation:
         """空状态全流程验证。"""
 
         class MockGit:
-            async def get_file_content(self, *_: Any, **__: Any) -> str | None:
+            async def get_file_content(self, *_args: Any, **_kwargs: Any) -> str | None:
                 return None
-
-            async def publish_commit_summary(self, *_: Any, **__: Any) -> None:
+            async def publish_commit_summary(self, *_args: Any, **_kwargs: Any) -> None:
                 pass
 
         graph = build_review_graph(git_provider=MockGit(), ai_provider=None)
@@ -378,17 +404,14 @@ class TestGraphCompilation:
         assert result["score"] == 100
         assert len(result["deduped_findings"]) == 0
 
-    async def test_with_chunks_runs_rules(
-        self, base_state: ReviewState, normal_chunk: CodeChunk
-    ) -> None:
+    async def test_with_chunks_runs_rules(self, base_state, normal_chunk: CodeChunk) -> None:
         """带 chunk 时规则检查产生 findings。"""
         from review_agent.service.git.base import PRFile
 
         class MockGit:
-            async def get_file_content(self, *_: Any, **__: Any) -> str | None:
+            async def get_file_content(self, *_args: Any, **_kwargs: Any) -> str | None:
                 return "def foo():\n    pass\n"
-
-            async def publish_commit_summary(self, *_: Any, **__: Any) -> None:
+            async def publish_commit_summary(self, *_args: Any, **_kwargs: Any) -> None:
                 pass
 
         base_state["files"] = [

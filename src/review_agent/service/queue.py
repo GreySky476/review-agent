@@ -4,25 +4,45 @@ from __future__ import annotations
 
 import logging
 import traceback
+from dataclasses import dataclass, field
 from typing import Any
 
 from arq import create_pool
 from arq.connections import RedisSettings
+from redis.asyncio import Redis as aioredis  # noqa: N813
 
-from review_agent.config.logging import setup_logging
+from review_agent.config.logging import setup_logging, setup_opentelemetry
 from review_agent.config.settings import get_settings
+from review_agent.service.dimensions.base import DimensionFinding
 from review_agent.service.error_logger import log_error
 from review_agent.service.git.base import PRFile
 from review_agent.service.git.github_provider import GitHubProvider
 from review_agent.types.enums import ReviewStatus
 
+
+@dataclass
+class _ReviewResult:
+    """评审结果（LangGraph 路径使用）。"""
+    findings: list[DimensionFinding] = field(default_factory=list)
+    score: int = 100
+    summary_markdown: str = ""
+    status: ReviewStatus = ReviewStatus.COMPLETED
+    error_message: str | None = None
+    reviewed_files: list[dict[str, str | None]] | None = None
+
+
 logger = logging.getLogger(__name__)
 
 
 async def _worker_startup(_ctx: dict[str, Any]) -> None:
-    """ARQ Worker 启动时配置日志（独立进程，默认日志级别为 WARNING）。"""
+    """ARQ Worker 启动时配置日志和 OTEL（独立进程）。"""
     settings = get_settings()
     setup_logging(level=settings.log_level)
+    setup_opentelemetry(
+        service_name=settings.otel_service_name,
+        endpoint=settings.otel_exporter_otlp_endpoint,
+        enabled=settings.otel_enabled,
+    )
     logger.info("ARQ worker started: log_level=%s", settings.log_level)
 
 
@@ -54,6 +74,21 @@ async def run_review(
 
     _status_completed = ReviewStatus.COMPLETED
     _status_failed = ReviewStatus.FAILED
+
+    # ── 分布式锁：防止同一 SHA 被多个 Worker 同时处理 ──
+    lock_key = f"lock:review:{project_id}:{sha[:12]}"
+    redis_client = None
+    try:
+        redis_client = await aioredis.from_url(
+            get_settings().redis_url, encoding="utf-8", decode_responses=True
+        )
+        locked = await redis_client.setnx(lock_key, "1")
+        if not locked:
+            logger.info("SHA %s already locked by another worker, skipping", sha[:8])
+            return {"status": "skipped", "reason": "locked", "sha": sha}
+        await redis_client.expire(lock_key, 300)
+    except Exception:
+        logger.debug("Distributed lock unavailable, proceeding without lock")
 
     try:
         logger.info(
@@ -118,29 +153,19 @@ async def run_review(
             for f in all_files
         ]
 
-        if settings.use_langgraph:
-            result = await _run_with_langgraph(
-                git_provider,
-                ai_provider,
-                repo_name,
-                sha,
-                files,
-                knowledge_base,
-                pr_number=pr_number,
-                previous_review_id=previous_review_id,
-                last_reviewed_sha=last_reviewed_sha,
-                previous_file_paths=previous_file_paths,
-                previous_reviewed_files=previous_reviewed_files,
-            )
-        else:
-            from review_agent.service.commit_review import CommitReviewService
-
-            service = CommitReviewService(
-                git_provider=git_provider,
-                ai_provider=ai_provider,
-                knowledge_base=knowledge_base,
-            )
-            result = await service.review_commit(repo_name, sha, files)
+        result = await _run_with_langgraph(
+            git_provider,
+            ai_provider,
+            repo_name,
+            sha,
+            files,
+            knowledge_base,
+            pr_number=pr_number,
+            previous_review_id=previous_review_id,
+            last_reviewed_sha=last_reviewed_sha,
+            previous_file_paths=previous_file_paths,
+            previous_reviewed_files=previous_reviewed_files,
+        )
 
         # 发布 PR Comment（标记 commit SHA，增量时追评）
         if result.summary_markdown and pr_number:
@@ -213,10 +238,11 @@ async def run_review(
                     review_id=review_id,
                 )
 
-        # 更新 ReviewModel 记录（先更新状态 + 分数，独立提交）
+        # 单一事务写入所有 DB 操作
         if review_id:
             try:
                 async with async_session_factory() as db:
+                    # 1. 更新 ReviewModel
                     review_repo = ReviewRepo(db)
                     await review_repo.update(
                         review_id,
@@ -229,27 +255,9 @@ async def run_review(
                         await review_repo.update_reviewed_files(
                             review_id, result.reviewed_files
                         )
-                    await db.commit()
-                    logger.info(
-                        "Review status updated: id=%s status=%s score=%d",
-                        review_id, result.status.value, result.score,
-                    )
-            except Exception:
-                logger.warning(
-                    "Failed to update review status %s: %s",
-                    review_id, traceback.format_exc(),
-                )
-                await log_error(
-                    error_type="db_write_failed",
-                    error_message=f"Failed to persist review status {review_id}",
-                    project_id=project_id,
-                    review_id=review_id,
-                )
 
-            # 独立事务写入 Findings（失败不影响 review 状态）
-            if result.findings:
-                try:
-                    async with async_session_factory() as db:
+                    # 2. 写入 Findings
+                    if result.findings:
                         for finding in result.findings:
                             finding_record = FindingModel(
                                 review_id=review_id,
@@ -264,52 +272,37 @@ async def run_review(
                                 rule_id=finding.rule_id,
                             )
                             db.add(finding_record)
-                        await db.commit()
-                        logger.info(
-                            "Findings saved: review=%s count=%d",
-                            review_id, len(result.findings),
-                        )
-                except Exception:
-                    logger.warning(
-                        "Failed to save findings for review %s: %s",
-                        review_id, traceback.format_exc(),
-                    )
 
-        # 更新 PR last_reviewed_sha
-        if review_id and pr_number:
-            try:
-                async with async_session_factory() as db:
-                    pr_repo = PullRequestRepo(db)
-                    await pr_repo.update_reviewed_sha(
-                        project_id, pr_number, sha, review_id
-                    )
+                    # 3. 更新 PR last_reviewed_sha
+                    if pr_number:
+                        pr_repo = PullRequestRepo(db)
+                        await pr_repo.update_reviewed_sha(
+                            project_id, pr_number, sha, review_id
+                        )
+
+                    # 4. 同步 commit is_reviewed
+                    from review_agent.repo.commit import CommitRepo
+
+                    commit_obj = await CommitRepo(db).get_by_sha(project_id, sha)
+                    if commit_obj:
+                        commit_obj.is_reviewed = True
+
+                    # 一次性提交
                     await db.commit()
                     logger.info(
-                        "Updated PR #%d last_reviewed_sha=%s", pr_number, sha[:8],
+                        "Review %s persisted: status=%s score=%d findings=%d",
+                        review_id, result.status.value, result.score, len(result.findings),
                     )
             except Exception:
                 logger.warning(
-                    "Failed to update PR last_reviewed_sha: %s",
-                    traceback.format_exc(),
+                    "Failed to persist review %s: %s", review_id, traceback.format_exc(),
                 )
-
-        # 同步 commit 状态：标记为已评审
-        try:
-            async with async_session_factory() as db:
-                from review_agent.repo.commit import CommitRepo
-
-                commit_obj = await CommitRepo(db).get_by_sha(project_id, sha)
-                if commit_obj:
-                    commit_obj.is_reviewed = True
-                    await db.commit()
-                    logger.info(
-                        "Commit is_reviewed synced: sha=%s", sha[:8],
-                    )
-        except Exception:
-            logger.warning(
-                "Failed to sync commit is_reviewed for %s: %s",
-                sha[:8], traceback.format_exc(),
-            )
+                await log_error(
+                    error_type="db_write_failed",
+                    error_message=f"Failed to persist review {review_id} (transaction rolled back)",
+                    project_id=project_id,
+                    review_id=review_id,
+                )
 
         logger.info(
             "PR review #%d completed: %d findings, score=%d",
@@ -344,14 +337,11 @@ async def run_review(
                     "Failed to mark review %s as failed: %s",
                     review_id, traceback.format_exc(),
                 )
-        return {
-            "project_id": project_id,
-            "pr_number": pr_number,
-            "sha": sha,
-            "status": ReviewStatus.FAILED.value,
-            "error": f"review_failed: {error_msg[:200]}",
-            "review_id": review_id,
-        }
+        raise
+    finally:
+        if redis_client:
+            await redis_client.delete(lock_key)
+            await redis_client.aclose()
 
 
 async def run_commit_review(
@@ -372,6 +362,21 @@ async def run_commit_review(
 
     _status_completed = ReviewStatus.COMPLETED
     _status_failed = ReviewStatus.FAILED
+
+    # ── 分布式锁：防止同一 SHA 被多个 Worker 同时处理 ──
+    lock_key = f"lock:review:{project_id}:{sha[:12]}"
+    redis_client = None
+    try:
+        redis_client = await aioredis.from_url(
+            get_settings().redis_url, encoding="utf-8", decode_responses=True
+        )
+        locked = await redis_client.setnx(lock_key, "1")
+        if not locked:
+            logger.info("SHA %s already locked by another worker, skipping", sha[:8])
+            return {"status": "skipped", "reason": "locked", "sha": sha}
+        await redis_client.expire(lock_key, 300)
+    except Exception:
+        logger.debug("Distributed lock unavailable, proceeding without lock")
 
     try:
         logger.info("Starting commit review for %s@%s (project=%s)", repo_name, sha, project_id)
@@ -422,6 +427,23 @@ async def run_commit_review(
         except Exception:
             logger.warning("Failed to load rules into knowledge base: %s", traceback.format_exc())
 
+        # webhook 路径的 changed_files 缺少 patch，从 GitHub API 补全
+        if not any(f.get("patch") for f in changed_files):
+            try:
+                commit_files = await git_provider.get_commit_diff(repo_name, sha)
+                patch_map = {cf.filename: cf for cf in commit_files}
+                for f in changed_files:
+                    cf = patch_map.get(f["filename"])
+                    if cf:
+                        f["patch"] = cf.patch
+                        f["additions"] = cf.additions
+                        f["deletions"] = cf.deletions
+            except Exception:
+                logger.warning(
+                    "Failed to enrich patches for %s@%s, falling back to full review",
+                    repo_name, sha,
+                )
+
         # 转换 changed_files 为 PRFile 对象
         files = [
             PRFile(
@@ -434,27 +456,17 @@ async def run_commit_review(
             for f in changed_files
         ]
 
-        if settings.use_langgraph:
-            result = await _run_with_langgraph(
-                git_provider,
-                ai_provider,
-                repo_name,
-                sha,
-                files,
-                knowledge_base,
-                previous_review_id=previous_review_id,
-                previous_reviewed_files=previous_reviewed_files,
-                skip_levels=skip_levels,
-            )
-        else:
-            from review_agent.service.commit_review import CommitReviewService
-
-            service = CommitReviewService(
-                git_provider=git_provider,
-                ai_provider=ai_provider,
-                knowledge_base=knowledge_base,
-            )
-            result = await service.review_commit(repo_name, sha, files)
+        result = await _run_with_langgraph(
+            git_provider,
+            ai_provider,
+            repo_name,
+            sha,
+            files,
+            knowledge_base,
+            previous_review_id=previous_review_id,
+            previous_reviewed_files=previous_reviewed_files,
+            skip_levels=skip_levels,
+        )
 
         # 发布摘要评论到 GitHub（失败不影响评审结果）
         if result.summary_markdown:
@@ -480,10 +492,11 @@ async def run_commit_review(
                     review_id=review_id,
                 )
 
-        # 更新 ReviewModel 记录（先更新状态 + 分数，独立提交）
+        # 单一事务写入所有 DB 操作
         if review_id:
             try:
                 async with async_session_factory() as db:
+                    # 1. 更新 ReviewModel
                     review_repo = ReviewRepo(db)
                     await review_repo.update(
                         review_id,
@@ -492,26 +505,9 @@ async def run_commit_review(
                         findings_count=len(result.findings),
                         error_message=result.error_message,
                     )
-                    await db.commit()
-                    logger.info(
-                        "Review status updated: id=%s status=%s score=%d",
-                        review_id, result.status.value, result.score,
-                    )
-            except Exception:
-                logger.warning(
-                    "Failed to update review status %s: %s", review_id, traceback.format_exc()
-                )
-                await log_error(
-                    error_type="db_write_failed",
-                    error_message=f"Failed to persist review status {review_id}",
-                    project_id=project_id,
-                    review_id=review_id,
-                )
 
-            # 独立事务写入 Findings（失败不影响 review 状态）
-            if result.findings:
-                try:
-                    async with async_session_factory() as db:
+                    # 2. 写入 Findings
+                    if result.findings:
                         for finding in result.findings:
                             finding_record = FindingModel(
                                 review_id=review_id,
@@ -526,33 +522,29 @@ async def run_commit_review(
                                 rule_id=finding.rule_id,
                             )
                             db.add(finding_record)
-                        await db.commit()
-                        logger.info(
-                            "Findings saved: review=%s count=%d",
-                            review_id, len(result.findings),
-                        )
-                except Exception:
-                    logger.warning(
-                        "Failed to save findings for review %s: %s",
-                        review_id, traceback.format_exc(),
-                    )
 
-            # 同步 commit 状态：标记为已评审
-            try:
-                async with async_session_factory() as db:
+                    # 3. 同步 commit is_reviewed
                     from review_agent.repo.commit import CommitRepo
 
                     commit_obj = await CommitRepo(db).get_by_sha(project_id, sha)
                     if commit_obj:
                         commit_obj.is_reviewed = True
-                        await db.commit()
-                        logger.info(
-                            "Commit is_reviewed synced: sha=%s", sha[:8],
-                        )
+
+                    # 一次性提交
+                    await db.commit()
+                    logger.info(
+                        "Review %s persisted: status=%s score=%d findings=%d",
+                        review_id, result.status.value, result.score, len(result.findings),
+                    )
             except Exception:
                 logger.warning(
-                    "Failed to sync commit is_reviewed for %s: %s",
-                    sha[:8], traceback.format_exc(),
+                    "Failed to persist review %s: %s", review_id, traceback.format_exc(),
+                )
+                await log_error(
+                    error_type="db_write_failed",
+                    error_message=f"Failed to persist review {review_id} (transaction rolled back)",
+                    project_id=project_id,
+                    review_id=review_id,
                 )
 
         logger.info(
@@ -597,13 +589,11 @@ async def run_commit_review(
                     project_id=project_id,
                     review_id=review_id,
                 )
-        return {
-            "project_id": project_id,
-            "sha": sha,
-            "status": ReviewStatus.FAILED.value,
-            "error": f"review_failed: {error_msg[:200]}",
-            "review_id": review_id,
-        }
+        raise
+    finally:
+        if redis_client:
+            await redis_client.delete(lock_key)
+            await redis_client.aclose()
 
 
 _DEFAULT_STATE: dict[str, Any] = {
@@ -611,6 +601,7 @@ _DEFAULT_STATE: dict[str, Any] = {
     "chunks": [],
     "source_codes": {},
     "pending_chunk": None,
+    "pending_structural_chunks": [],
     "rule_findings": [],
     "ai_findings": [],
     "structural_findings": [],
@@ -648,7 +639,10 @@ async def _run_with_langgraph(
     skip_levels: str = "",
 ) -> Any:
     """使用 LangGraph 图执行评审（支持 PR 增量）。"""
-    from review_agent.service.commit_review import CommitReviewResult
+    from review_agent.service.review_graph.checkpointer import (
+        create_checkpointer,
+        create_postgres_checkpointer,
+    )
     from review_agent.service.review_graph.graph import build_review_graph
 
     logger.info(
@@ -659,10 +653,26 @@ async def _run_with_langgraph(
         "yes" if ai_provider else "no",
         "yes" if knowledge_base else "no",
     )
+
+    # 尝试使用 PostgresSaver（持久化），失败时降级到 MemorySaver
+    try:
+        saver_cm = create_postgres_checkpointer()
+        saver = await saver_cm.__aenter__()
+        try:
+            await saver.setup()
+        except Exception:
+            logger.debug("PostgresSaver setup skipped (tables may already exist)")
+        _saver_cleanup = lambda: saver_cm.__aexit__(None, None, None)  # noqa: E731
+    except Exception:
+        logger.info("PostgresSaver unavailable, falling back to MemorySaver")
+        saver = create_checkpointer()
+        _saver_cleanup = lambda: None  # noqa: E731
+
     graph = build_review_graph(
         git_provider=git_provider,
         ai_provider=ai_provider,
         knowledge_base=knowledge_base,
+        checkpointer=saver,
     )
 
     initial_state: dict[str, Any] = {
@@ -707,16 +717,20 @@ async def _run_with_langgraph(
     deduped = result_state.get("deduped_findings", [])
     reviewed_files = compute_reviewed_files(new_chunks, deduped)
 
-    return CommitReviewResult(
-        findings=deduped,
-        score=result_state.get("score", 100),
-        summary_markdown=result_state.get("summary_markdown", ""),
-        # 显式设为 COMPLETED：不依赖 graph state 中的 status 字段
-        # （_DEFAULT_STATE 默认 RUNNING，graph 可能未覆盖）
-        status=ReviewStatus.COMPLETED,
-        error_message="; ".join(error_msgs) if error_msgs else None,
-        reviewed_files=reviewed_files,
-    )
+    has_issues = bool(unreviewed) or bool(error_msgs)
+    status = ReviewStatus.COMPLETED_WITH_ERRORS if has_issues else ReviewStatus.COMPLETED
+
+    try:
+        return _ReviewResult(
+            findings=deduped,
+            score=result_state.get("score", 100),
+            summary_markdown=result_state.get("summary_markdown", ""),
+            status=status,
+            error_message="; ".join(error_msgs) if error_msgs else None,
+            reviewed_files=reviewed_files,
+        )
+    finally:
+        _saver_cleanup()
 
 
 async def enqueue_review(project_id: str, pr_number: int, head_sha: str) -> str | None:
@@ -872,6 +886,32 @@ def _extract_repo_name_from_url(repo_url: str) -> str | None:
     return None
 
 
+async def _on_job_failure(ctx: dict[str, Any]) -> None:
+    """ARQ Job 最终失败回调（所有重试耗尽后调用）。
+
+    记录死信信息到 review_errors 表，供运维排查。
+    """
+    job_id = ctx.get("job_id", "?")
+    function_name = ctx.get("function_name", "?")
+    exc_info = ctx.get("exc_info")
+    exc_str = str(exc_info[1]) if exc_info and exc_info[1] else "Unknown error"
+    args = ctx.get("args", [])
+    args_summary = ", ".join(str(a)[:50] for a in args[:3])
+
+    await log_error(
+        error_type="arq_job_failed",
+        error_message=(
+            f"ARQ job {job_id} failed after all retries: "
+            f"{function_name}({args_summary}) -> {exc_str}"
+        ),
+        error_detail=traceback.format_exc() if exc_info else None,
+    )
+    logger.error(
+        "ARQ dead letter: job=%s func=%s args=%s error=%s",
+        job_id, function_name, args_summary, exc_str,
+    )
+
+
 class WorkerSettings:
     """ARQ Worker 配置。
 
@@ -882,4 +922,9 @@ class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(get_settings().arq_redis_url)
     keep_result_seconds = 7 * 86400
     keep_result_hours = 7 * 24
+    job_retry = get_settings().arq_job_retry
+    job_retry_after = get_settings().arq_job_retry_after
+    max_jobs = 5
+    job_timeout = 600
     on_startup = _worker_startup
+    on_failure = _on_job_failure

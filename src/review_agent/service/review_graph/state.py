@@ -53,6 +53,7 @@ class ReviewState(TypedDict):
 
     # ── 挂起的 chunk（由 Send 设置，节点读取后用 reducer 合并 findings） ──
     pending_chunk: CodeChunk | None
+    pending_structural_chunks: list[CodeChunk]
 
     # ── Findings（Annotated reducer 累加，Send 并发安全） ──
     rule_findings: Annotated[list[DimensionFinding], _merge_lists]

@@ -11,15 +11,17 @@ from review_agent.types.enums import ChunkPath
 
 
 class TestEstimateTokens:
+    def test_short_text(self) -> None:
+        assert _estimate_tokens("hello") == 2  # 5//2 = 2
+
     def test_empty_string(self) -> None:
         assert _estimate_tokens("") == 1
 
-    def test_short_text(self) -> None:
-        assert _estimate_tokens("hello") == 1
+    
 
     def test_longer_text(self) -> None:
         tokens = _estimate_tokens("a" * 300)
-        assert tokens == 100  # 300 // 3
+        assert tokens == 150  # 300 // 2 (changed from //3)
 
 
 class TestExtractFunctions:

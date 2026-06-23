@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -14,6 +15,36 @@ from review_agent.service.ai.types import AICompletionRequest, AICompletionRespo
 from review_agent.types.exceptions import AIProviderError
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_completion_response(
+    data: dict[str, Any], request: AICompletionRequest
+) -> AICompletionResponse:
+    """Parse raw API response dict into an AICompletionResponse.
+
+    Args:
+        data: Raw JSON response from the DeepSeek API.
+        request: Original completion request (for fallback model name).
+
+    Returns:
+        Parsed completion response.
+
+    Raises:
+        AIProviderError: If the response format is unexpected.
+    """
+    try:
+        content = data["choices"][0]["message"]["content"]
+        usage = data.get("usage")
+    except (KeyError, IndexError) as exc:
+        msg = f"Unexpected DeepSeek response format: {json.dumps(data)}"
+        raise AIProviderError(msg) from exc
+
+    return AICompletionResponse(
+        content=content,
+        model=data.get("model", request.model),
+        usage=usage,
+        raw=data,
+    )
 
 
 class DeepSeekProvider(AIProvider):  # type: ignore[misc]
@@ -51,34 +82,44 @@ class DeepSeekProvider(AIProvider):  # type: ignore[misc]
             "max_tokens": request.max_tokens,
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=request.timeout_seconds) as client:
-                response = await client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                data = response.json()
-        except httpx.TimeoutException as exc:
-            msg = f"DeepSeek request timed out after {request.timeout_seconds}s"
-            raise AIProviderError(msg) from exc
-        except httpx.HTTPStatusError as exc:
-            msg = f"DeepSeek API returned {exc.response.status_code}: {exc.response.text}"
-            raise AIProviderError(msg) from exc
-        except httpx.RequestError as exc:
-            msg = f"DeepSeek request failed: {exc}"
-            raise AIProviderError(msg) from exc
-
-        try:
-            content = data["choices"][0]["message"]["content"]
-            usage = data.get("usage")
-        except (KeyError, IndexError) as exc:
-            msg = f"Unexpected DeepSeek response format: {json.dumps(data)}"
-            raise AIProviderError(msg) from exc
-
-        return AICompletionResponse(
-            content=content,
-            model=data.get("model", request.model),
-            usage=usage,
-            raw=data,
+        settings = get_settings()
+        timeout = httpx.Timeout(
+            connect=settings.ai_connect_timeout,
+            read=settings.ai_read_timeout,
+            write=settings.ai_connect_timeout,
+            pool=settings.ai_connect_timeout,
         )
+
+        max_attempts = settings.ai_max_retries + 1
+        last_exception: Exception | None = None
+
+        for attempt in range(max_attempts):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
+                return _parse_completion_response(data, request)
+            except httpx.TimeoutException:
+                last_exception = AIProviderError("DeepSeek request timed out")
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code >= 500:
+                    msg = f"DeepSeek returned {exc.response.status_code}"
+                    last_exception = AIProviderError(msg)
+                else:
+                    msg = (
+                        f"DeepSeek returned {exc.response.status_code}: "
+                        f"{exc.response.text[:200]}"
+                    )
+                    raise AIProviderError(msg) from exc
+            except httpx.RequestError as exc:
+                last_exception = AIProviderError(f"DeepSeek request failed: {exc}")
+
+            if attempt < max_attempts - 1:
+                wait = min(2**attempt * 5, 60)
+                await asyncio.sleep(wait)
+
+        raise last_exception  # type: ignore[misc]
 
     async def count_tokens(self, text: str, model: str | None = None) -> int:
         """估算文本 Token 数。

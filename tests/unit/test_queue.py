@@ -20,9 +20,7 @@ class TestWorkerSettings:
 
 class TestRunReview:
     async def test_run_review_returns_result(self) -> None:
-        result = await run_review(
-            {}, "proj-1", "owner/repo", "abc123", 42, [],
-        )
+        result = await run_review({}, "proj-1", "owner/repo", "abc123", 42, [])
         assert result["project_id"] == "proj-1"
         assert result["pr_number"] == 42
         assert result["status"] == ReviewStatus.COMPLETED.value

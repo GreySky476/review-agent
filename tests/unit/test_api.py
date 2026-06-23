@@ -1,5 +1,11 @@
 """Tests for API endpoints."""
 
+# 测试环境禁用 IP 白名单和速率限制（需在导入 app 前设置）
+import os
+
+os.environ.setdefault("REVIEW_AGENT_WEBHOOK_IP_WHITELIST_ENABLED", "false")
+os.environ.setdefault("REVIEW_AGENT_WEBHOOK_RATE_LIMITER_ENABLED", "false")
+
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 

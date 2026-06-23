@@ -24,8 +24,11 @@ from review_agent.api.webhook import router as webhook_router
 from review_agent.api.webhook_events import router as webhook_events_router
 from review_agent.config.logging import setup_logging, setup_opentelemetry
 from review_agent.config.settings import get_settings
-from review_agent.service.health import start_periodic_health_check
-from review_agent.service.scheduler import start_sync_scheduler
+from review_agent.service.scheduler import (
+    start_health_check_scheduler,
+    start_recovery_scheduler,
+    start_sync_scheduler,
+)
 from review_agent.types.exceptions import (
     ConfigError,
     NotFoundError,
@@ -43,11 +46,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     shutdown: 清理资源。
     """
     settings = get_settings()
-    if settings.health_check_interval_minutes > 0:
-        start_periodic_health_check(
-            interval_minutes=settings.health_check_interval_minutes,
-        )
+    start_health_check_scheduler(interval_minutes=settings.health_check_interval_minutes)
     start_sync_scheduler(interval_minutes=5)
+    start_recovery_scheduler(interval_minutes=5)
     yield
 
 
@@ -55,17 +56,20 @@ def create_app() -> FastAPI:
     """创建并配置 FastAPI 应用实例。"""
     settings = get_settings()
     setup_logging(level=settings.log_level)
-    setup_opentelemetry(
-        service_name=settings.otel_service_name,
-        endpoint=settings.otel_exporter_otlp_endpoint,
-        enabled=settings.otel_enabled,
-    )
 
     app = FastAPI(
         title=settings.app_name,
         version="0.1.0",
         docs_url="/docs",
         lifespan=lifespan,
+    )
+
+    # 在 app 创建后初始化 OTEL（需要 app 实例注册 FastAPI 仪表）
+    setup_opentelemetry(
+        service_name=settings.otel_service_name,
+        endpoint=settings.otel_exporter_otlp_endpoint,
+        enabled=settings.otel_enabled,
+        app=app,
     )
 
     app.add_middleware(

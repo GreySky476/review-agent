@@ -39,3 +39,4 @@ logs/
 
 # Project specific
 docs/plans/archive/
+.claude/worktrees/
