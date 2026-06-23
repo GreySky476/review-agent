@@ -189,3 +189,101 @@ class Publisher:
             )
 
         return "\n".join(lines)
+
+    def generate_incremental_summary(
+        self,
+        findings: list[DimensionFinding],
+        score: int,
+        commit_sha: str,
+        unreviewed_count: int = 0,
+    ) -> str:
+        """生成增量评审的 Markdown 摘要。
+
+        用于 PR 增量评审场景，只输出本次 commit 的新 findings，
+        不包含历史 findings。历史记录可通过 DB 查询。
+
+        Args:
+            findings: 本次新增的 Finding 列表。
+            score: 本次评审总分。
+            commit_sha: 正在评审的 commit SHA。
+            unreviewed_count: 无法评审的文件数。
+
+        Returns:
+            Markdown 格式的增量摘要。
+        """
+        short_sha = commit_sha[:8]
+        lines = [f"## AI 增量代码评审 — commit `{short_sha}`\n"]
+
+        if score >= 90:
+            rating = "🟢 优秀"
+        elif score >= 70:
+            rating = "🟡 良好"
+        else:
+            rating = "🔴 待改进"
+
+        lines.append(f"**本次评分：{score}/100** — {rating}\n")
+
+        if unreviewed_count:
+            lines.append(f"⚠ **{unreviewed_count} 个文件未能完成评审**（无法获取源码）\n")
+
+        if not findings:
+            lines.append("✅ 本次变更未发现新问题。\n")
+            return "\n".join(lines)
+
+        critical = sum(1 for f in findings if f.severity == FindingSeverity.CRITICAL)
+        warning = sum(1 for f in findings if f.severity == FindingSeverity.WARNING)
+        info = sum(1 for f in findings if f.severity == FindingSeverity.INFO)
+
+        lines.append(f"发现 {len(findings)} 个新问题: ")
+        if critical:
+            lines.append(f"🔴 {critical} 个 Critical")
+        if warning:
+            lines.append(f"🟡 {warning} 个 Warning")
+        if info:
+            lines.append(f"🔵 {info} 个 Info")
+
+        lines.append("")
+
+        severity_order = {
+            FindingSeverity.CRITICAL: 0,
+            FindingSeverity.WARNING: 1,
+            FindingSeverity.INFO: 2,
+        }
+        category_priority = {
+            FindingCategory.BUG: 0,
+            FindingCategory.SECURITY: 1,
+            FindingCategory.PERFORMANCE: 2,
+            FindingCategory.STRUCTURE: 3,
+            FindingCategory.STYLE: 4,
+            FindingCategory.DEPENDENCY: 5,
+        }
+
+        sorted_findings = sorted(
+            findings,
+            key=lambda f: (
+                severity_order.get(f.severity, 99),
+                category_priority.get(f.category, 99),
+            ),
+        )
+
+        severity_icons = {
+            FindingSeverity.CRITICAL: "🔴",
+            FindingSeverity.WARNING: "🟡",
+            FindingSeverity.INFO: "🔵",
+        }
+
+        lines.append("| 严重性 | 类别 | 位置 | 问题 | 建议 |")
+        lines.append("|--------|------|------|------|------|")
+        for f in sorted_findings:
+            icon = severity_icons.get(f.severity, "⚪")
+            location = f"`{f.file_path}`"
+            if f.line_start:
+                location += f":{f.line_start}"
+            title = f.title.replace("|", "\\|")
+            suggestion = f.suggestion.replace("|", "\\|").replace("\n", " ")
+            lines.append(
+                f"| {icon} **{f.severity.value.upper()}** | {f.category.value} |"
+                f" {location} | {title} | {suggestion} |"
+            )
+
+        return "\n".join(lines)

@@ -1,6 +1,5 @@
 """Tests for publisher service."""
 
-
 from review_agent.service.dimensions.base import DimensionFinding
 from review_agent.service.publisher import Publisher
 from review_agent.types.enums import FindingCategory, FindingSeverity
@@ -30,18 +29,22 @@ class TestPublisherScore:
 
     def test_critical_deduction(self) -> None:
         p = Publisher()
-        _, score = p.aggregate([
-            _finding(severity=FindingSeverity.CRITICAL),
-        ])
+        _, score = p.aggregate(
+            [
+                _finding(severity=FindingSeverity.CRITICAL),
+            ]
+        )
         assert score == 85  # 100 - 15
 
     def test_multiple_deductions(self) -> None:
         p = Publisher()
-        _, score = p.aggregate([
-            _finding(severity=FindingSeverity.CRITICAL, title="Sev 1"),
-            _finding(severity=FindingSeverity.WARNING, title="Sev 2"),
-            _finding(severity=FindingSeverity.INFO, title="Sev 3"),
-        ])
+        _, score = p.aggregate(
+            [
+                _finding(severity=FindingSeverity.CRITICAL, title="Sev 1"),
+                _finding(severity=FindingSeverity.WARNING, title="Sev 2"),
+                _finding(severity=FindingSeverity.INFO, title="Sev 3"),
+            ]
+        )
         assert score == 74  # 100 - 15 - 8 - 3
 
     def test_min_score_is_zero(self) -> None:

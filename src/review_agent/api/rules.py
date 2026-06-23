@@ -1,22 +1,28 @@
 """评审规则管理 API 端点。
 
 RuleModel CRUD：
-- GET    /rules         — 规则列表（分页 + 过滤）
-- POST   /rules         — 创建规则
-- PATCH  /rules/{id}    — 更新规则
-- DELETE /rules/{id}    — 删除（软删除）
+- GET    /rules              — 规则列表（分页 + 过滤）
+- POST   /rules              — 创建规则
+- PATCH  /rules/{id}         — 更新规则
+- DELETE /rules/{id}         — 删除（软删除）
+- POST   /rules/{id}/re-embed       — 单条规则重新嵌入
+- POST   /rules/re-embed-all        — 全量规则重新嵌入
+- POST   /rules/{id}/test-embedding — 测试规则匹配
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from review_agent.config.database import get_session
 from review_agent.repo.rule import RuleRepo
+from review_agent.service.embedding import EmbeddingService
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["rules"])
 
 
@@ -58,6 +64,7 @@ async def list_rules(
                 "tags": r.tags,
                 "version": r.version,
                 "is_active": r.is_active,
+                "embedding_status": r.embedding is not None,
                 "create_time": r.create_time.isoformat() if r.create_time else None,
             }
             for r in items
@@ -107,6 +114,8 @@ async def update_rule(
             update_fields[field] = body[field]
 
     await repo.update(rule_id, **update_fields)
+    # 规则内容变更后清除缓存
+    EmbeddingService().cache_invalidate(rule_id)
     return {"id": rule_id, "status": "updated"}
 
 
@@ -118,4 +127,108 @@ async def delete_rule(
     """删除评审规则（软删除）。"""
     repo = RuleRepo(db)
     await repo.soft_delete(rule_id)
+    EmbeddingService().cache_invalidate(rule_id)
     return {"id": rule_id, "status": "deleted"}
+
+
+@router.post("/rules/{rule_id}/re-embed")
+async def re_embed_rule(
+    rule_id: str,
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """重新计算单条规则的嵌入向量。
+
+    调用外部嵌入 API 生成向量，持久化到数据库。
+    """
+    repo = RuleRepo(db)
+    rule = await repo.get_active(rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="规则不存在")
+
+    embedder = EmbeddingService()
+    embed_text = f"{rule.name}: {rule.content}"
+    vector = await embedder.embed(embed_text)
+    vector_json = str(vector)
+
+    await repo.update(rule_id, embedding=vector_json)
+    embedder.cache_set(rule_id, vector)
+
+    return {
+        "id": rule_id,
+        "embedding_status": True,
+        "vector_dim": len(vector),
+    }
+
+
+@router.post("/rules/re-embed-all")
+async def re_embed_all_rules(
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """重新计算所有活跃规则的嵌入向量。"""
+    repo = RuleRepo(db)
+    rules = await repo.list_active()
+    embedder = EmbeddingService()
+    updated = 0
+
+    for rule in rules:
+        try:
+            embed_text = f"{rule.name}: {rule.content}"
+            vector = await embedder.embed(embed_text)
+            vector_json = str(vector)
+            await repo.update(rule.id, embedding=vector_json)
+            embedder.cache_set(rule.id, vector)
+            updated += 1
+        except Exception as exc:
+            logger.warning("Failed to embed rule %s: %s", rule.id, exc)
+            continue
+
+    return {
+        "total": len(rules),
+        "updated": updated,
+    }
+
+
+@router.post("/rules/{rule_id}/test-embedding")
+async def test_rule_embedding(
+    rule_id: str,
+    body: dict[str, Any],
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """测试规则匹配：传入代码片段，返回相似度得分。
+
+    Request body:
+        ``{"code": "def foo():\\n    pass"}``
+    """
+    repo = RuleRepo(db)
+    rule = await repo.get_active(rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="规则不存在")
+
+    code = body.get("code", "")
+    if not code.strip():
+        raise HTTPException(status_code=400, detail="code 不能为空")
+
+    embedder = EmbeddingService()
+    code_vec = await embedder.embed(code[:500])
+    rule_vec: list[float] | None = embedder.cache_get(rule_id)
+
+    if rule_vec is None and rule.embedding:
+        import contextlib
+        import json
+
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            rule_vec = json.loads(rule.embedding)
+
+    if rule_vec is None:
+        return {
+            "id": rule_id,
+            "similarity": None,
+            "message": "该规则尚未计算嵌入向量，请先调用 re-embed",
+        }
+
+    similarity = EmbeddingService.cosine_similarity(code_vec, rule_vec)
+    return {
+        "id": rule_id,
+        "similarity": round(similarity, 4),
+        "name": rule.name,
+    }

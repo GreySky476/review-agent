@@ -22,7 +22,7 @@ def fanout_to_dimensions(state: ReviewState) -> list[Send]:
     Send 创建的子分支不会自动继承父 state，因此需要显式传入 chunks。
     各分支的 rule_findings 通过 Annotated reducer 自动合并到 state。
     """
-    chunks = state.get("chunks", [])
+    chunks = state.get("new_chunks") or state.get("chunks", [])
     logger.info(
         "fanout_to_dimensions: dispatching %d chunks to 5 rule dimensions",
         len(chunks),
@@ -47,7 +47,7 @@ def route_chunks(state: ReviewState) -> list[Send]:
     如果没有任何 chunk，直接路由到 aggregate 确保流程完整。
     """
     sends: list[Send] = []
-    chunks = state.get("chunks", [])
+    chunks = state.get("new_chunks") or state.get("chunks", [])
     files = state.get("files", [])
 
     ai_count = 0

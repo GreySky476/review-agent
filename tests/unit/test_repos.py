@@ -52,13 +52,13 @@ class TestProjectRepo:
     @pytest.mark.asyncio
     async def test_get_by_platform_repo(self, db):
         repo = ProjectRepo(db)
-        result = await repo.get_by_platform_repo(Platform.GITHUB, "https://github.com/test")
+        await repo.get_by_platform_repo(Platform.GITHUB, "https://github.com/test")
         db.execute.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_get_by_webhook_secret(self, db):
         repo = ProjectRepo(db)
-        result = await repo.get_by_webhook_secret("secret-123")
+        await repo.get_by_webhook_secret("secret-123")
         db.execute.assert_awaited_once()
 
 
@@ -77,7 +77,7 @@ class TestReviewRepo:
     @pytest.mark.asyncio
     async def test_get_by_head_sha(self, db):
         repo = ReviewRepo(db)
-        result = await repo.get_by_head_sha("abc123")
+        await repo.get_by_head_sha("abc123")
         db.execute.assert_awaited_once()
 
 
@@ -109,6 +109,7 @@ class TestFindingRepo:
     async def test_count_by_severity(self, db):
         f1, f2 = MagicMock(), MagicMock()
         from review_agent.types.enums import FindingSeverity
+
         f1.severity = FindingSeverity.CRITICAL
         f2.severity = FindingSeverity.WARNING
         db.execute = AsyncMock(return_value=make_result_mock([f1, f2]))
@@ -147,13 +148,13 @@ class TestUserRepo:
     @pytest.mark.asyncio
     async def test_get_by_username(self, db):
         repo = UserRepo(db)
-        result = await repo.get_by_username("alice")
+        await repo.get_by_username("alice")
         db.execute.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_get_by_email(self, db):
         repo = UserRepo(db)
-        result = await repo.get_by_email("alice@example.com")
+        await repo.get_by_email("alice@example.com")
         db.execute.assert_awaited_once()
 
 
@@ -181,7 +182,7 @@ class TestWebhookEventRepo:
     @pytest.mark.asyncio
     async def test_create_from_payload(self, db):
         repo = WebhookEventRepo(db)
-        result = await repo.create_from_payload(
+        await repo.create_from_payload(
             project_id="proj-1",
             platform="github",
             event_id="evt-002",

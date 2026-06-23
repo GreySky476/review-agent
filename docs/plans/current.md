@@ -1,69 +1,82 @@
-# Plan: Commit 评审分支过滤
+# Plan: PR 详情页数据链路重构（DB 优先 + 定时同步 + 手动刷新）
 
-> 状态：已完成 | 2026-06-10
-
----
-
-## Context
-
-当前系统对所有分支的 push 都会触发 AI 评审。实际场景中，只有 main、develop、release/* 等稳定分支需要评审，feature 和个人分支的大量推送会导致不必要的 AI 调用和噪声。
-
-**目标**：在每个项目的配置中指定需要触发评审的分支模式，push webhook 只对匹配分支触发评审。
+> 状态：✅ 已完成 | 2026-06-15 ｜ 根据 `docs/features/data-sync/design.md` 实施
 
 ---
 
-## 设计要点
+## 任务完成情况
 
-| 问题 | 决策 |
-|------|------|
-| 配置存储 | 使用 `ProjectModel.settings` JSON 字段（已存在），新增 `review_branches` 键 |
-| 匹配方式 | `fnmatch` 通配符（支持 `main`, `release/*`, `feature/*`），默认 `["*"]`（全员匹配） |
-| 过滤位置 | `webhook_helpers.py` 的 `handle_push_event()` 中，提取 branch 后立即检查 |
-| 前端的 API | 复用现有 `PATCH /projects/{id}` + `ProjectUpdate`，新增 `review_branches` 字段 |
-| 前端 UI | 在项目设置弹窗中追加"分支过滤"配置区，输入框 + 提示文字 |
+### 第一阶段：Git 平台抽象层
 
----
+- [x] 1. `service/git/base.py` — 新增 `list_open_prs()` 抽象方法
+- [x] 2. `service/git/github_provider.py` — 实现 `list_open_prs()`
 
-## 完成工作
+### 第二阶段：数据访问层
 
-### 后端
+- [x] 3. `repo/commit.py` — 新增 `list_by_pr()` + `bulk_upsert()`
 
-| 文件 | 操作 |
-|------|------|
-| `src/review_agent/types/models.py` | — `ProjectUpdate` 新增 `review_branches: list[str] \| None` |
-| `src/review_agent/repo/project.py` | — 新增 `get_settings()`、`update_settings()`、`get_review_branches()`（默认 `["*"]`） |
-| `src/review_agent/api/projects.py` | — `_format_project()` 返回 `review_branches`；`update_project()` 接收并写入 settings JSON |
-| `src/review_agent/api/webhook_helpers.py` | — `handle_push_event()` 提取 branch 后 `fnmatch` 检查；不匹配则跳过并返回 |
+### 第三阶段：后台任务层
 
-### 前端
+- [x] 4. `service/queue.py` — 新增 `sync_project_data` worker + `_extract_repo_name_from_url`
+- [x] 5. `service/scheduler.py` — **新增**：定时同步调度器（5 分钟间隔）
 
-| 文件 | 操作 |
-|------|------|
-| `ui/src/hooks/use-projects.ts` | — `Project` 接口新增 `review_branches`；新增 `useUpdateProject()` mutation |
-| `ui/src/pages/project-detail.tsx` | — 设置弹窗新增"评审分支过滤"区域，含输入框、保存按钮、成功/错误反馈、使用示例 |
+### 第四阶段：API 层
 
-### 测试
+- [x] 6. `api/prs.py` — 新增 `POST /projects/{id}/pull-requests/{num}/sync` 端点
+- [x] 7. `api/prs.py` — `get_pull_request_detail` 改为从 commits 表读数据（DB 优先）
 
-| 文件 | 操作 |
-|------|------|
-| `tests/unit/test_webhook_helpers.py` | — 13 个测试：精确匹配、通配符、默认值、无效 JSON、settings 合并 |
+### 第五阶段：应用组装
 
-## 数据流
+- [x] 8. `api/app.py` — lifespan 启动 scheduler
 
-```
-Push Webhook → handle_push_event()
-  → 提取 repo_url → 查找 Project
-  → 提取 branch (from ref)
-  → 读 project.settings.review_branches（默认 ["*"]）
-  → fnmatch 匹配 branch
-     ├── 匹配 → 继续评审流程（保存 commit + 入队）
-     └── 不匹配 → log + return {"status": "skipped", "reason": "branch_not_matched"}
-```
+### 第六阶段：前端
+
+- [x] 9. `ui/src/hooks/use-reviews.ts` — 新增 `useSyncPullRequest()` hook
+- [x] 10. `ui/src/pages/review-detail.tsx` — PR 详情页添加 🔄 刷新按钮
+
+### 测试与验证
+
+- [x] 11. 修复 `test_queue.py` 中过时的测试断言（2 → 3 个 worker 函数）
+- [x] 12. 新增 `sync_project_data` 和 `_extract_repo_name_from_url` 单元测试
+- [x] 13. `ruff check .` → All checks passed （修复 3 个 lint 问题）
+- [x] 14. `mypy src/` → 仅剩预存错误（非本次改动引入）
+- [x] 15. `pytest --no-cov` → 272 passed
 
 ## 验证结果
 
-```
-pytest          → 236 passed ✓
-ruff check .    → 通过（仅预存 issue）
-mypy src/       → 通过（预存类型标记，非本次改动）
-```
+| 检查项 | 结果 |
+|--------|------|
+| `ruff check .` | ✅ All checks passed |
+| `mypy src/` | ✅ 无新增错误（仅预存 40 个） |
+| `pytest` | ✅ 272 passed（+2 新测试） |
+
+## 详细改动摘要
+
+### `service/git/base.py`
+- 新增 `list_open_prs()` 抽象方法，返回 `list[dict[str, Any]]`
+
+### `service/git/github_provider.py`
+- 实现 `list_open_prs()`，使用 `get_pulls(state="open")`
+
+### `repo/commit.py`
+- `list_by_pr(project_id, pr_number)` → 按 PR 编号查询 commits
+- `bulk_upsert(project_id, pr_number, commits)` → 先删后插批量写入
+
+### `service/queue.py`
+- `sync_project_data` → 同步单个项目的所有 Open PR 数据
+- `_extract_repo_name_from_url` → URL 解析辅助函数
+- `WorkerSettings.functions` → 注册 `sync_project_data`
+
+### `service/scheduler.py`
+- 后台异步循环，每 5 分钟遍历所有活跃项目，向 ARQ 入队 `sync_project_data`
+
+### `api/prs.py`
+- `get_pull_request_detail`：从 commits 表读取数据（DB 优先），无数据返回空数组
+- `POST /sync`：手动触发同步，调 GitHub API → `bulk_upsert` → 返回带 review 状态的数据
+
+### `api/app.py`
+- lifespan 中启动 `start_sync_scheduler(interval_minutes=5)`
+
+### UI
+- `useSyncPullRequest` hook（POST + 自动刷新 query cache）
+- PR 详情页 header 添加 「🔄 刷新」 按钮（同步中显示 ⏳ 同步中...）

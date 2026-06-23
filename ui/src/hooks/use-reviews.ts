@@ -123,12 +123,67 @@ export function useReviewDetail(reviewId: string) {
   })
 }
 
+export interface ProjectReviewItem {
+  id: string
+  pr_number: number | null
+  pr_title: string
+  head_sha: string
+  status: string
+  score: number | null
+  findings_count: number
+  severity_breakdown: Record<string, number> | null
+  category_breakdown: Record<string, number> | null
+  duration_seconds: number | null
+  create_time: string | null
+}
+
+interface ProjectReviewsResponse {
+  items: ProjectReviewItem[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export function useProjectReviews(
+  projectId: string,
+  params?: { status?: string; page?: number; pageSize?: number },
+) {
+  return useQuery<ProjectReviewsResponse>({
+    queryKey: ['project-reviews', projectId, params],
+    queryFn: async () => {
+      const { data } = await api.get(
+        `/projects/${projectId}/reviews`,
+        { params: { status: params?.status || undefined, page: params?.page || 1, page_size: params?.pageSize || 20 } },
+      )
+      return data
+    },
+    enabled: !!projectId,
+    staleTime: 30 * 1000,
+  })
+}
+
 export function useTriggerPRReview(projectId: string, prNumber: number) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (force?: boolean) => {
+      const { data } = await api.post(
+        `/projects/${projectId}/pull-requests/${prNumber}/review`,
+        { params: { force: force ? 'true' : undefined } },
+      )
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pull-request', projectId, prNumber] })
+    },
+  })
+}
+
+export function useSyncPullRequest(projectId: string, prNumber: number) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async () => {
       const { data } = await api.post(
-        `/projects/${projectId}/pull-requests/${prNumber}/review`,
+        `/projects/${projectId}/pull-requests/${prNumber}/sync`,
       )
       return data
     },

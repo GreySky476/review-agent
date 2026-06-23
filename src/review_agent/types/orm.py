@@ -12,6 +12,8 @@ import uuid
 from datetime import UTC, date, datetime
 
 from sqlalchemy import (
+    JSON,
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -119,6 +121,7 @@ class ReviewModel(Base, TimestampMixin, SoftDeleteMixin):
     commits_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_files: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # relationships
     project: Mapped[ProjectModel] = relationship("ProjectModel", back_populates="reviews")
@@ -173,6 +176,13 @@ class RuleModel(Base, TimestampMixin, SoftDeleteMixin):
     tags: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    embedding: Mapped[str | None] = mapped_column(Text, nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("projects.id"),
+        nullable=True,
+    )
 
 
 # ── User ─────────────────────────────────────────────────
@@ -239,6 +249,11 @@ class PullRequestModel(Base, TimestampMixin):
     is_merged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     merged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     platform: Mapped[Platform] = mapped_column(String(32), nullable=False)
+    last_reviewed_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_review_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("reviews.id"), nullable=True
+    )
+    pr_comment_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 # ── Commit ─────────────────────────────────────────────────
@@ -263,6 +278,9 @@ class CommitModel(Base, TimestampMixin):
     additions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     deletions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     files_changed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    committed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None,
+    )
 
 
 # ── Comment ────────────────────────────────────────────────

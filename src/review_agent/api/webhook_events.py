@@ -24,9 +24,7 @@ async def list_webhook_events(
 ) -> dict[str, Any]:
     """获取项目的 Webhook 事件日志。"""
     # Count
-    count_stmt = select(WebhookEventModel.id).where(
-        WebhookEventModel.project_id == project_id
-    )
+    count_stmt = select(WebhookEventModel.id).where(WebhookEventModel.project_id == project_id)
     if action:
         count_stmt = count_stmt.where(WebhookEventModel.action == action)
     total_result = await db.execute(count_stmt)

@@ -116,17 +116,32 @@ class TestReduceFindings:
         assert _merge_lists(None, None) == []
 
     def test_existing_none(self) -> None:
-        result = _merge_lists(None, [DimensionFinding(
-            category=FindingCategory.BUG, severity=FindingSeverity.INFO,
-            title="t", description="d", suggestion="s", file_path="f",
-        )])
+        result = _merge_lists(
+            None,
+            [
+                DimensionFinding(
+                    category=FindingCategory.BUG,
+                    severity=FindingSeverity.INFO,
+                    title="t",
+                    description="d",
+                    suggestion="s",
+                    file_path="f",
+                )
+            ],
+        )
         assert len(result) == 1
 
     def test_updates_none(self) -> None:
-        existing = [DimensionFinding(
-            category=FindingCategory.BUG, severity=FindingSeverity.INFO,
-            title="t", description="d", suggestion="s", file_path="f",
-        )]
+        existing = [
+            DimensionFinding(
+                category=FindingCategory.BUG,
+                severity=FindingSeverity.INFO,
+                title="t",
+                description="d",
+                suggestion="s",
+                file_path="f",
+            )
+        ]
         result = _merge_lists(existing, None)
         assert len(result) == 1
 
@@ -203,13 +218,16 @@ class TestPublishResults:
 class TestRuleNodes:
     """验证 5 个规则节点在空 chunks 时返回空，有代码时返回 findings。"""
 
-    @pytest.mark.parametrize("node_fn", [
-        run_security_rules,
-        run_bug_rules,
-        run_performance_rules,
-        run_style_rules,
-        run_dependency_rules,
-    ])
+    @pytest.mark.parametrize(
+        "node_fn",
+        [
+            run_security_rules,
+            run_bug_rules,
+            run_performance_rules,
+            run_style_rules,
+            run_dependency_rules,
+        ],
+    )
     async def test_empty_chunks(self, base_state: ReviewState, node_fn) -> None:
         base_state["chunks"] = []
         result = await node_fn(base_state)
@@ -217,9 +235,12 @@ class TestRuleNodes:
 
     async def test_security_detects_eval(self, base_state: ReviewState) -> None:
         chunk = CodeChunk(
-            file_path="src/bad.py", function_name="hack",
+            file_path="src/bad.py",
+            function_name="hack",
             source_code="def hack():\n    eval('danger')\n",
-            start_line=1, end_line=3, estimated_tokens=20,
+            start_line=1,
+            end_line=3,
+            estimated_tokens=20,
             path=ChunkPath.DETAILED_REVIEW,
         )
         base_state["chunks"] = [chunk]
@@ -228,9 +249,12 @@ class TestRuleNodes:
 
     async def test_bug_detects_bare_except(self, base_state: ReviewState) -> None:
         chunk = CodeChunk(
-            file_path="src/bad.py", function_name="danger",
+            file_path="src/bad.py",
+            function_name="danger",
             source_code="def danger():\n    try:\n        pass\n    except:\n        pass\n",
-            start_line=1, end_line=5, estimated_tokens=20,
+            start_line=1,
+            end_line=5,
+            estimated_tokens=20,
             path=ChunkPath.DETAILED_REVIEW,
         )
         base_state["chunks"] = [chunk]
@@ -288,7 +312,9 @@ class TestRouteChunks:
         assert len(result) == 1
         assert result[0].node == "ai_review"
 
-    def test_oversized_chunk_routes_to_structural(self, base_state: ReviewState, oversized_chunk) -> None:
+    def test_oversized_chunk_routes_to_structural(
+        self, base_state: ReviewState, oversized_chunk
+    ) -> None:
         base_state["chunks"] = [oversized_chunk]
         result = route_chunks(base_state)
         assert len(result) == 1
@@ -311,9 +337,10 @@ class TestGraphCompilation:
         """验证图能成功编译并包含所有预期节点。"""
 
         class MockGit:
-            async def get_file_content(self, *args: Any, **kwargs: Any) -> str | None:
+            async def get_file_content(self, *_: Any, **__: Any) -> str | None:
                 return None
-            async def publish_commit_summary(self, *args: Any, **kwargs: Any) -> None:
+
+            async def publish_commit_summary(self, *_: Any, **__: Any) -> None:
                 pass
 
         graph = build_review_graph(git_provider=MockGit(), ai_provider=None)
@@ -336,9 +363,10 @@ class TestGraphCompilation:
         """空状态全流程验证。"""
 
         class MockGit:
-            async def get_file_content(self, *args: Any, **kwargs: Any) -> str | None:
+            async def get_file_content(self, *_: Any, **__: Any) -> str | None:
                 return None
-            async def publish_commit_summary(self, *args: Any, **kwargs: Any) -> None:
+
+            async def publish_commit_summary(self, *_: Any, **__: Any) -> None:
                 pass
 
         graph = build_review_graph(git_provider=MockGit(), ai_provider=None)
@@ -350,14 +378,17 @@ class TestGraphCompilation:
         assert result["score"] == 100
         assert len(result["deduped_findings"]) == 0
 
-    async def test_with_chunks_runs_rules(self, base_state: ReviewState, normal_chunk: CodeChunk) -> None:
+    async def test_with_chunks_runs_rules(
+        self, base_state: ReviewState, normal_chunk: CodeChunk
+    ) -> None:
         """带 chunk 时规则检查产生 findings。"""
         from review_agent.service.git.base import PRFile
 
         class MockGit:
-            async def get_file_content(self, *args: Any, **kwargs: Any) -> str | None:
+            async def get_file_content(self, *_: Any, **__: Any) -> str | None:
                 return "def foo():\n    pass\n"
-            async def publish_commit_summary(self, *args: Any, **kwargs: Any) -> None:
+
+            async def publish_commit_summary(self, *_: Any, **__: Any) -> None:
                 pass
 
         base_state["files"] = [

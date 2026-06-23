@@ -42,6 +42,27 @@ class PullRequestRepo(BaseRepository[PullRequestModel]):  # type: ignore[misc]
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
 
+    async def update_reviewed_sha(
+        self, project_id: str, pr_number: int, sha: str, review_id: str
+    ) -> PullRequestModel | None:
+        """更新 PR 的 last_reviewed_sha（增量评审进度标记）。"""
+        pr = await self.get_by_pr_number(project_id, pr_number)
+        if pr:
+            pr.last_reviewed_sha = sha  # type: ignore[assignment]
+            pr.last_review_id = review_id  # type: ignore[assignment]
+            await self._db.flush()
+        return pr
+
+    async def update_pr_comment_id(
+        self, project_id: str, pr_number: int, comment_id: int
+    ) -> PullRequestModel | None:
+        """更新 PR 的 GitHub PR Comment ID（用于追评编辑）。"""
+        pr = await self.get_by_pr_number(project_id, pr_number)
+        if pr:
+            pr.pr_comment_id = comment_id  # type: ignore[assignment]
+            await self._db.flush()
+        return pr
+
     async def upsert(
         self, project_id: str, pr_number: int, **kwargs: str | bool | None
     ) -> PullRequestModel:

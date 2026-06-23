@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -46,10 +47,10 @@ LANGUAGE_DOC_MAP: dict[str, str] = {
 }
 
 _STANDARDS_DIR = (
-    Path(__file__).resolve().parent.parent.parent.parent
-    / "docs/coding/language-standards"
+    Path(__file__).resolve().parent.parent.parent.parent / "docs/coding/language-standards"
 )
 _CACHE: dict[str, str] = {}
+_CACHE_LOCK = threading.Lock()
 
 
 def detect_language(file_path: str) -> str:
@@ -81,26 +82,31 @@ def load_standards(file_path: str) -> str:
     lang = detect_language(file_path)
     doc_name = LANGUAGE_DOC_MAP.get(lang, "generic.md")
 
-    # 缓存命中
-    if doc_name in _CACHE:
-        return _CACHE[doc_name]
+    # 缓存命中（读锁）
+    with _CACHE_LOCK:
+        if doc_name in _CACHE:
+            return _CACHE[doc_name]
 
     doc_path = _STANDARDS_DIR / doc_name
     try:
         content = doc_path.read_text(encoding="utf-8")
-        _CACHE[doc_name] = content
+        with _CACHE_LOCK:
+            _CACHE[doc_name] = content
         logger.debug("Loaded standards: %s (from %s)", doc_name, doc_path)
         return content
     except FileNotFoundError:
         logger.warning("Standards file not found: %s", doc_path)
-        _CACHE[doc_name] = ""
+        with _CACHE_LOCK:
+            _CACHE[doc_name] = ""
         return ""
     except OSError as exc:
         logger.warning("Failed to read standards file %s: %s", doc_path, exc)
-        _CACHE[doc_name] = ""
+        with _CACHE_LOCK:
+            _CACHE[doc_name] = ""
         return ""
 
 
 def clear_cache() -> None:
     """清空规范文档缓存（仅测试场景使用）。"""
-    _CACHE.clear()
+    with _CACHE_LOCK:
+        _CACHE.clear()

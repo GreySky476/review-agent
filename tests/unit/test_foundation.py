@@ -48,11 +48,13 @@ class TestExceptions:
 
     def test_exception_captures_cause(self) -> None:
         """异常应能捕获原始异常作为原因。"""
+        original = "original"
+        wrapped = "wrapped"
         try:
-            raise ValueError("original") from None
+            raise ValueError(original) from None
         except ValueError:
             try:
-                raise DatabaseError("wrapped") from ValueError("original")
+                raise DatabaseError(wrapped) from ValueError(original)
             except DatabaseError as e:
                 assert e.__cause__ is not None
 
@@ -101,6 +103,14 @@ class TestEnums:
     def test_all_enums_are_unique(self) -> None:
         """每个枚举类的值应唯一。"""
 
-        for enum_cls in [Platform, FindingSeverity, FindingCategory, ReviewStatus, ChunkPath, EventAction, UserRole]:
+        for enum_cls in [
+            Platform,
+            FindingSeverity,
+            FindingCategory,
+            ReviewStatus,
+            ChunkPath,
+            EventAction,
+            UserRole,
+        ]:
             values = [e.value for e in enum_cls]
             assert len(values) == len(set(values)), f"{enum_cls.__name__} has duplicate values"

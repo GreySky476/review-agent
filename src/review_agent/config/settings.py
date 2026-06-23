@@ -44,6 +44,10 @@ class AppSettings(BaseSettings):
     # ── AI 模型 ──────────────────────────────────────────
     ai_model_name: str = Field(default="deepseek-v4-flash", description="主 AI 模型名称")
     ai_economy_model: str = Field(default="deepseek-v4-flash", description="经济模型名称")
+    ai_embedding_model: str = Field(
+        default="text-embedding-3-small",
+        description="嵌入模型名称",
+    )
     ai_base_url: str = Field(default="https://api.deepseek.com", description="AI API 基础 URL")
     ai_api_key: str = Field(default="", description="AI API 密钥")
     ai_request_timeout: int = Field(default=30, description="AI 请求超时（秒）")
@@ -64,6 +68,10 @@ class AppSettings(BaseSettings):
     review_skip_extensions: str = Field(
         default=".md,.rst,.txt",
         description="跳过评审的文件扩展名（逗号分隔）",
+    )
+    review_skip_paths: str = Field(
+        default=".claude/**,node_modules/**,__pycache__/**,.git/**,*.md,*.rst,*.txt",
+        description="评审跳过的路径模式（逗号分隔，glob 模式），支持 ** 递归匹配",
     )
     review_max_concurrency: int = Field(
         default=3,

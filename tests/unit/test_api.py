@@ -282,7 +282,9 @@ class TestProjectEndpoints:
         assert resp.status_code == 200
         assert resp.json()["deleted"] is True
 
-    async def test_webhook_connection_check(self, client: AsyncClient, mock_db: AsyncSession) -> None:
+    async def test_webhook_connection_check(
+        self, client: AsyncClient, mock_db: AsyncSession
+    ) -> None:
         """Webhook test endpoint should return events field."""
         project = MagicMock(spec=ProjectModel)
         project.id = "proj-123"
@@ -307,7 +309,11 @@ class TestReviewEndpoints:
     async def test_trigger_review(self, client: AsyncClient) -> None:
         resp = await client.post(
             "/api/v1/projects/p1/reviews",
-            json={"project_id": "00000000-0000-0000-0000-000000000000", "pr_number": 42, "head_sha": "abc"},
+            json={
+                "project_id": "00000000-0000-0000-0000-000000000000",
+                "pr_number": 42,
+                "head_sha": "abc",
+            },
         )
         assert resp.status_code == 202
         data = resp.json()
@@ -324,7 +330,9 @@ class TestReviewEndpoints:
         assert resp.json()["items"] == []
 
     async def test_list_reviews_with_filters(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/v1/projects/p1/reviews?status=completed&score_min=70&score_max=100")
+        resp = await client.get(
+            "/api/v1/projects/p1/reviews?status=completed&score_min=70&score_max=100"
+        )
         assert resp.status_code == 200
 
 
@@ -348,9 +356,7 @@ class TestDashboardEndpoints:
         assert data["period"] == "monthly"
 
     async def test_quality_trends_with_filters(self, client: AsyncClient) -> None:
-        resp = await client.get(
-            "/api/v1/dashboard/quality-trends?project_id=p1&period=weekly"
-        )
+        resp = await client.get("/api/v1/dashboard/quality-trends?project_id=p1&period=weekly")
         assert resp.status_code == 200
 
 
@@ -414,9 +420,7 @@ class TestErrorEndpoints:
         assert data["total"] == 0
 
     async def test_list_errors_with_filters(self, client: AsyncClient) -> None:
-        resp = await client.get(
-            "/api/v1/errors?project_id=p1&error_type=ai_call_failed"
-        )
+        resp = await client.get("/api/v1/errors?project_id=p1&error_type=ai_call_failed")
         assert resp.status_code == 200
 
     async def test_error_stats(self, client: AsyncClient) -> None:

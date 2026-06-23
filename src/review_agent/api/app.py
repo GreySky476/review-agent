@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from review_agent.api.commits import router as commits_router
 from review_agent.api.dashboard import router as dashboard_router
 from review_agent.api.errors import router as errors_router
+from review_agent.api.export import router as export_router
 from review_agent.api.findings import router as findings_router
 from review_agent.api.health import router as health_router
 from review_agent.api.projects import router as projects_router
@@ -24,6 +25,7 @@ from review_agent.api.webhook_events import router as webhook_events_router
 from review_agent.config.logging import setup_logging, setup_opentelemetry
 from review_agent.config.settings import get_settings
 from review_agent.service.health import start_periodic_health_check
+from review_agent.service.scheduler import start_sync_scheduler
 from review_agent.types.exceptions import (
     ConfigError,
     NotFoundError,
@@ -45,6 +47,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         start_periodic_health_check(
             interval_minutes=settings.health_check_interval_minutes,
         )
+    start_sync_scheduler(interval_minutes=5)
     yield
 
 
@@ -74,10 +77,12 @@ def create_app() -> FastAPI:
     )
 
     _register_exception_handlers(app)
+
     # healthz 保持在根路径（用于负载均衡存活检查）
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(webhook_router, prefix="/webhook")
     app.include_router(dashboard_router, prefix="/api/v1")
@@ -86,6 +91,7 @@ def create_app() -> FastAPI:
     app.include_router(prs_router, prefix="/api/v1")
     app.include_router(commits_router, prefix="/api/v1")
     app.include_router(errors_router, prefix="/api/v1")
+    app.include_router(export_router, prefix="/api/v1")
     app.include_router(findings_router, prefix="/api/v1")
     app.include_router(rules_router, prefix="/api/v1")
     app.include_router(webhook_events_router, prefix="/api/v1")

@@ -30,8 +30,10 @@ async def trigger_review(
     _ = project_id
     review_repo = ReviewRepo(db)
     review = await review_repo.create(
-        project_id=project_id, pr_number=_body.pr_number,
-        pr_title=_body.pr_title, head_sha=_body.head_sha,
+        project_id=project_id,
+        pr_number=_body.pr_number,
+        pr_title=_body.pr_title,
+        head_sha=_body.head_sha,
         status=ReviewStatus.PENDING,
     )
     return {"task_id": str(uuid.uuid4()), "status": review.status, "result_url": None}
@@ -39,18 +41,29 @@ async def trigger_review(
 
 @router.get("/projects/{project_id}/reviews/{task_id}")
 async def get_review_status(
-    project_id: str, task_id: str, db: AsyncSession = Depends(get_session),
+    project_id: str,
+    task_id: str,
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """查询评审任务状态。"""
     _ = (project_id, task_id)
     repo = ReviewRepo(db)
     review = await repo.get(task_id)
     if review is None:
-        return {"task_id": task_id, "status": ReviewStatus.PENDING.value,
-                "score": None, "findings_count": 0, "result_url": None, "findings": []}
+        return {
+            "task_id": task_id,
+            "status": ReviewStatus.PENDING.value,
+            "score": None,
+            "findings_count": 0,
+            "result_url": None,
+            "findings": [],
+        }
     return {
-        "task_id": task_id, "status": review.status, "score": review.score,
-        "findings_count": review.findings_count, "result_url": review.report_url,
+        "task_id": task_id,
+        "status": review.status,
+        "score": review.score,
+        "findings_count": review.findings_count,
+        "result_url": review.report_url,
         "findings": [],
     }
 
@@ -74,8 +87,12 @@ async def list_reviews(
     return {
         "items": [
             {
-                "id": r.id, "pr_number": r.pr_number, "pr_title": r.pr_title,
-                "status": r.status, "score": r.score, "head_sha": r.head_sha,
+                "id": r.id,
+                "pr_number": r.pr_number,
+                "pr_title": r.pr_title,
+                "status": r.status,
+                "score": r.score,
+                "head_sha": r.head_sha,
                 "findings_count": r.findings_count,
                 "severity_breakdown": dict(breakdowns.get(r.id, {}).get("severity", {})),
                 "category_breakdown": dict(breakdowns.get(r.id, {}).get("category", {})),
@@ -84,21 +101,28 @@ async def list_reviews(
             }
             for r in items
         ],
-        "total": total, "page": page, "page_size": page_size,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
     }
 
 
 @router.get("/reviews/{review_id}/comments")
 async def list_review_comments(
-    review_id: str, db: AsyncSession = Depends(get_session),
+    review_id: str,
+    db: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
     """获取评审的所有评论。"""
     repo = CommentRepo(db)
     comments = await repo.list_by_review(review_id)
     return [
         {
-            "id": c.id, "review_id": c.review_id, "finding_id": c.finding_id,
-            "author": c.author, "content": c.content, "action": c.action,
+            "id": c.id,
+            "review_id": c.review_id,
+            "finding_id": c.finding_id,
+            "author": c.author,
+            "content": c.content,
+            "action": c.action,
             "create_time": c.create_time.isoformat() if c.create_time else None,
         }
         for c in comments
@@ -107,13 +131,17 @@ async def list_review_comments(
 
 @router.post("/reviews/{review_id}/comments", status_code=201)
 async def create_review_comment(
-    review_id: str, body: dict[str, Any], db: AsyncSession = Depends(get_session),
+    review_id: str,
+    body: dict[str, Any],
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """添加评论到评审。"""
     repo = CommentRepo(db)
     comment = await repo.create(
-        review_id=review_id, finding_id=body.get("finding_id"),
-        author=body.get("author", "anonymous"), content=body.get("content", ""),
+        review_id=review_id,
+        finding_id=body.get("finding_id"),
+        author=body.get("author", "anonymous"),
+        content=body.get("content", ""),
         action=body.get("action"),
     )
     await db.flush()
@@ -159,9 +187,11 @@ async def list_all_reviews(
     total_result = await db.execute(count_stmt)
     total = len(total_result.scalars().all())
 
-    stmt = stmt.order_by(ReviewModel.create_time.desc()).offset(
-        (page - 1) * page_size
-    ).limit(page_size)
+    stmt = (
+        stmt.order_by(ReviewModel.create_time.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     rows = await db.execute(stmt)
     review_ids: list[str] = []
     row_list = rows.all()
@@ -172,15 +202,21 @@ async def list_all_reviews(
     items: list[dict[str, Any]] = []
     for review, project_name in row_list:
         bd = breakdowns.get(review.id, {})
-        items.append({
-            "id": review.id, "project_id": review.project_id,
-            "project_name": project_name,
-            "pr_number": review.pr_number, "pr_title": review.pr_title,
-            "head_sha": review.head_sha, "status": review.status,
-            "score": review.score, "findings_count": review.findings_count,
-            "severity_breakdown": dict(bd.get("severity", {})),
-            "category_breakdown": dict(bd.get("category", {})),
-            "duration_seconds": _calc_duration(review),
-            "create_time": review.create_time.isoformat() if review.create_time else None,
-        })
+        items.append(
+            {
+                "id": review.id,
+                "project_id": review.project_id,
+                "project_name": project_name,
+                "pr_number": review.pr_number,
+                "pr_title": review.pr_title,
+                "head_sha": review.head_sha,
+                "status": review.status,
+                "score": review.score,
+                "findings_count": review.findings_count,
+                "severity_breakdown": dict(bd.get("severity", {})),
+                "category_breakdown": dict(bd.get("category", {})),
+                "duration_seconds": _calc_duration(review),
+                "create_time": review.create_time.isoformat() if review.create_time else None,
+            }
+        )
     return {"items": items, "total": total, "page": page, "page_size": page_size}

@@ -6,6 +6,8 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from review_agent.config.database import get_session
@@ -15,7 +17,7 @@ from review_agent.repo.review import ReviewRepo
 from review_agent.service.git.github_provider import GitHubProvider
 from review_agent.service.queue import enqueue_commit_review
 from review_agent.types.enums import ReviewStatus
-from review_agent.types.models import CommitReviewRequest
+from review_agent.types.orm import ReviewModel
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["commits"])
@@ -49,6 +51,21 @@ async def list_commits(
         count_filters["author"] = author
     total = await repo.count(filters=count_filters)
 
+    # 查询每个 commit 的最新 review
+    sha_list = [c.sha for c in items if c.sha]
+    review_map: dict[str, dict[str, Any]] = {}
+    if sha_list:
+        review_rows = await db.execute(
+            select(ReviewModel.id, ReviewModel.head_sha, ReviewModel.status).where(
+                ReviewModel.head_sha.in_(sha_list),
+                ReviewModel.project_id == project_id,
+                ReviewModel.is_deleted.is_(False),
+            ).order_by(ReviewModel.head_sha, ReviewModel.create_time.desc())
+        )
+        for r in review_rows.all():
+            if r.head_sha not in review_map:
+                review_map[r.head_sha] = {"review_id": r.id, "review_status": r.status}
+
     return {
         "items": [
             {
@@ -58,7 +75,9 @@ async def list_commits(
                 "message": c.message,
                 "branch": c.branch,
                 "pr_number": c.pr_number,
-                "is_reviewed": c.is_reviewed,
+                "is_reviewed": c.is_reviewed or (c.sha in review_map),
+                "review_id": review_map.get(c.sha, {}).get("review_id"),
+                "review_status": review_map.get(c.sha, {}).get("review_status"),
                 "create_time": c.create_time.isoformat() if c.create_time else None,
             }
             for c in items
@@ -69,26 +88,22 @@ async def list_commits(
     }
 
 
-@router.post("/projects/{project_id}/commits/{sha}/review", status_code=202)
+@router.post("/projects/{project_id}/commits/{sha}/review", status_code=202, response_model=None)
 async def trigger_commit_review(
     project_id: str,
     sha: str,
-    body: CommitReviewRequest,
+    force: bool = Query(False, description="强制重新评审"),
+    skip_levels: str = Query("", description="跳过的严重级别，逗号分隔"),
     db: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
-    """通过 @mention 触发提交评审。
+) -> Any:
+    """触发单次提交评审。
 
     1. 查找项目并提取仓库名
-    2. 标记 commit is_reviewed = True
-    3. 从 Git 平台获取变更文件
-    4. 将评审任务加入队列
+    2. SHA 去重检查（已有 completed 评审且不强制时跳过）
+    3. 加载上一轮 reviewed_files 作为增量上下文
+    4. 创建评审记录并加入队列
     """
-    logger.info(
-        "Manual review triggered: project=%s sha=%s mention_user=%s",
-        project_id,
-        sha,
-        body.mention_user,
-    )
+    logger.info("Commit review triggered: project=%s sha=%s force=%s", project_id, sha, force)
 
     # 1. 查找项目
     project_repo = ProjectRepo(db)
@@ -97,29 +112,36 @@ async def trigger_commit_review(
         logger.warning("Project not found: %s", project_id)
         return {"status": "rejected", "reason": "project_not_found"}
 
-    # 从 repo_url 提取 owner/repo
     repo_name = _extract_repo_name(project.repo_url)
     if not repo_name:
         logger.warning("Cannot extract repo_name from repo_url: %s", project.repo_url)
         return {"status": "rejected", "reason": "invalid_repo_url"}
 
-    # 2. 查找或创建 commit 记录
-    commit_repo = CommitRepo(db)
-    commit = await commit_repo.get_by_sha(project_id, sha)
-    if commit:
-        logger.info("Commit found: %s (is_reviewed=%s)", sha, commit.is_reviewed)
-        commit.is_reviewed = True
-        await db.flush()
-    else:
-        logger.info("Commit not in DB, creating placeholder: %s", sha)
-        commit = await commit_repo.create(
-            project_id=project_id,
-            sha=sha,
-            author=body.mention_user,
-            message="",
-            branch=None,
-            is_reviewed=True,
-        )
+    # 2. SHA 去重检查
+    try:
+        review_repo_instance = ReviewRepo(db)
+        existing = await review_repo_instance.get_by_head_sha(sha)
+        if existing:
+            if existing.status in (ReviewStatus.COMPLETED, ReviewStatus.COMPLETED_WITH_ERRORS):
+                if not force:
+                    logger.info("SHA %s already completed, skipping", sha[:8])
+                    return {"status": "skipped", "reason": "sha_unchanged"}
+            elif existing.status in (ReviewStatus.PENDING, ReviewStatus.RUNNING):
+                if not force:
+                    logger.info("SHA %s review in progress, rejecting", sha[:8])
+                    return JSONResponse(
+                        {
+                            "status": "rejected",
+                            "reason": "review_in_progress",
+                            "review_id": existing.id,
+                        },
+                        status_code=409,
+                    )
+                # force=true: 软删除旧 review 再创建新评审
+                logger.info("Force re-review: soft-deleting old review %s", existing.id[:8])
+                await review_repo_instance.soft_delete(existing.id)
+    except Exception:
+        logger.debug("SHA dedup check failed: %s", exc_info=True)
 
     # 3. 获取变更文件
     changed_files: list[dict[str, Any]] = []
@@ -141,17 +163,29 @@ async def trigger_commit_review(
         logger.warning("Failed to fetch commit diff for %s@%s: %s", repo_name, sha, exc)
 
     if not changed_files:
-        logger.warning("No changed files found for commit %s@%s, skipping queue", repo_name, sha)
+        logger.warning("No changed files for commit %s@%s", repo_name, sha)
         return {
-            "status": "accepted",
-            "task_id": None,
-            "commit_found": True,
-            "reason": "no_changed_files",
+            "status": "accepted", "task_id": None,
+            "commit_found": True, "reason": "no_changed_files",
         }
 
-    # 4. 创建评审记录
-    review_repo = ReviewRepo(db)
-    review = await review_repo.create(
+    # 4. 加载上一轮 reviewed_files
+    previous_review_id: str | None = None
+    previous_reviewed_files: list[dict] = []
+    try:
+        prev_review = await ReviewRepo(db).get_by_head_sha(sha)
+        if prev_review and prev_review.reviewed_files:
+            previous_review_id = prev_review.id
+            previous_reviewed_files = prev_review.reviewed_files
+            logger.info(
+                "Loaded previous review %s: %d files",
+                prev_review.id[:8], len(previous_reviewed_files),
+            )
+    except Exception:
+        logger.debug("Failed to load previous review: %s", exc_info=True)
+
+    # 5. 创建评审记录
+    review = await ReviewRepo(db).create(
         project_id=project_id,
         pr_number=None,
         pr_title=f"Commit {sha[:8]}",
@@ -161,28 +195,25 @@ async def trigger_commit_review(
     )
     logger.info("Review record created: id=%s sha=%s", review.id, sha)
 
-    # 5. 加入评审队列（传递 review_id 以便 worker 更新记录）
+    # 6. 入队（含增量上下文）
     task_id = await enqueue_commit_review(
         project_id=project_id,
         repo_name=repo_name,
         sha=sha,
         changed_files=changed_files,
         review_id=review.id,
+        previous_review_id=previous_review_id,
+        previous_reviewed_files=previous_reviewed_files,
+        skip_levels=skip_levels,
     )
 
-    # 更新 task_id
     if task_id:
         review.task_id = task_id
         await db.flush()
 
     logger.info(
-        "Review enqueued: project=%s sha=%s repo=%s task=%s review=%s files=%d",
-        project_id,
-        sha,
-        repo_name,
-        task_id,
-        review.id,
-        len(changed_files),
+        "Review enqueued: project=%s sha=%s task=%s review=%s files=%d",
+        project_id, sha, task_id, review.id, len(changed_files),
     )
 
     return {

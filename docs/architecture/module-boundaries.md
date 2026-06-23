@@ -56,6 +56,7 @@ types/ ──→ config/ ──→ repo/ ──→ service/ ──→ api/ ─�
 - 请求/响应序列化
 - 认证与权限校验
 - **禁止**：业务逻辑实现
+- **禁止**：从非权威数据源推导系统状态（见第六节）
 
 ### 2.6 ui/ — 前端展示层
 
@@ -161,3 +162,88 @@ grep -r "from src\.repo" src/api/ && exit 1
 ```
 
 违反依赖方向规则的提交**不予合并**。
+
+---
+
+## 六、状态判定与数据源规则
+
+> 本节的三个原则源自一次 Webhook 状态判定错误的事故复盘，详见 `docs/reflections/2026-06-14-webhook-status-architecture.md`。
+
+### 6.1 单一权威数据源原则
+
+**每个系统状态字段必须由一个确定的权威数据源维护，API 层只查询该数据源，不重新计算。**
+
+如果一个后台任务（如心跳巡检）已经在模型上维护了一个布尔/枚举状态字段（如 `project.webhook_enabled`），API 层必须直接使用该字段，不得从其他表重新推导相同状态。
+
+🔴 **反模式**（本项目实际发生）：`_format_project()` 从 `webhook_events` 表查询最后事件时间并用 24 小时间隔推导连接状态，忽略了 `project.webhook_enabled`。
+
+```python
+# ❌ 错误：从事件日志表推导状态
+elif (datetime.now(UTC) - webhook_last_event_at) > timedelta(hours=24):
+    webhook_status = "inactive"
+```
+
+🟢 **正确模式**：
+
+```python
+# ✅ 正确：直接使用权威数据源
+webhook_status = "disconnected" if not project.webhook_enabled else "connected"
+```
+
+**检测方法**：当编写一个计算状态（connected/disconnected、active/inactive）的函数时，先检查对应模型上是否已有表示此概念的字段。如果有，直接使用，不再重新计算。
+
+### 6.2 日志表不作为状态表
+
+**职责为记录事件的表（审计日志、事件流、`webhook_events`）不可用于推导系统状态。日志表中的事件缺失不等于系统故障——它可能仅表示一段无活动期。**
+
+🔴 **反模式**：
+
+```python
+# ❌ 错误：用事件日志的缺席推断系统故障
+last_event = await webhook_repo.last_event_time(project_id)
+if last_event and (now - last_event) > 24h:
+    status = "inactive"  # 误报——可能只是项目无活动
+```
+
+🟢 **正确模式**：
+
+- 状态字段应由专门的生命周期过程维护（心跳、Worker、事件处理器）
+- 日志表只用于：审计追溯、调试排查、事件重放
+- 如果确实需要从事件推导状态，创建一个专门的汇总表或状态字段，由事件处理器在事件到达时更新
+
+**检测方法**：如果查询以 `WHERE event_table.project_id = X ORDER BY create_time DESC LIMIT 1` 开头，且意图是用结果判定系统功能是否正常——这是一个代码异味。
+
+### 6.3 测试端点只验证不修复
+
+**"测试连接"类型的端点应当是只读的验证操作。它检查系统状态并报告结果，不应通过副作用来补偿其他代码路径的缺陷。**
+
+🔴 **反模式**（本项目实际发生）：
+
+```python
+# ❌ 错误：测试端点写数据库来"修复"状态显示
+result = await git.check_webhook(...)
+if result["found"]:
+    await WebhookEventRepo(db).create_from_payload(...)  # 副作用
+    await db.flush()
+```
+
+🟢 **正确模式**：
+
+```python
+# ✅ 正确：测试端点只验证并报告
+result = await git.check_webhook(...)
+if result["found"]:
+    project.webhook_enabled = True  # 更新权威字段
+    await db.flush()
+return result
+```
+
+**检测方法**：如果测试端点的处理函数包含写数据库的副作用，问自己：这个副作用是在补偿其他代码路径的缺陷吗？如果是，修复那个缺陷，而不是在这里打补丁。
+
+---
+
+## 七、关联文档
+
+- [架构反思：Webhook 状态判定数据源错误](../reflections/2026-06-14-webhook-status-architecture.md)
+- [架构总览](overview.md)
+

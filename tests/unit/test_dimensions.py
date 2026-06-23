@@ -107,12 +107,10 @@ class TestReviewDependency:
 class TestReviewStructure:
     async def test_complexity_calculation(self) -> None:
         code = "def foo():\n    if a:\n        for b in c:\n            if d:\n                pass"
-        chunk = _make_chunk(code, name="foo")
         assert _calculate_complexity(code) > 1
 
     async def test_nesting_depth(self) -> None:
         code = "def foo():\n    if a:\n        if b:\n            pass"
-        chunk = _make_chunk(code, name="foo")
         depth = _estimate_nesting_depth(code)
         assert depth >= 2
 
