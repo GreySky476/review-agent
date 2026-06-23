@@ -63,11 +63,13 @@ async def list_commits(
                 ReviewModel.status,
                 ReviewModel.score,
                 ReviewModel.reviewed_files,
-            ).where(
+            )
+            .where(
                 ReviewModel.head_sha.in_(sha_list),
                 ReviewModel.project_id == project_id,
                 ReviewModel.is_deleted.is_(False),
-            ).order_by(ReviewModel.head_sha, ReviewModel.create_time.desc())
+            )
+            .order_by(ReviewModel.head_sha, ReviewModel.create_time.desc())
         )
         for r in review_rows.all():
             if r.head_sha not in review_map:
@@ -185,15 +187,16 @@ async def trigger_commit_review(
     if not changed_files:
         logger.warning("No changed files for commit %s@%s", repo_name, sha)
         return {
-            "status": "accepted", "task_id": None,
-            "commit_found": True, "reason": "no_changed_files",
+            "status": "accepted",
+            "task_id": None,
+            "commit_found": True,
+            "reason": "no_changed_files",
         }
 
     # 4. 获取 commit message 作为评审标题
     commit_obj = await CommitRepo(db).get_by_sha(project_id, sha)
     commit_message = (
-        commit_obj.message[:80] if commit_obj and commit_obj.message
-        else f"Commit {sha[:8]}"
+        commit_obj.message[:80] if commit_obj and commit_obj.message else f"Commit {sha[:8]}"
     )
 
     # 5. 创建评审记录
@@ -226,7 +229,11 @@ async def trigger_commit_review(
 
     logger.info(
         "Review enqueued: project=%s sha=%s task=%s review=%s files=%d",
-        project_id, sha, task_id, review.id, len(changed_files),
+        project_id,
+        sha,
+        task_id,
+        review.id,
+        len(changed_files),
     )
 
     return {

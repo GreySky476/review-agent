@@ -107,10 +107,7 @@ class DeepSeekProvider(AIProvider):  # type: ignore[misc]
                     msg = f"DeepSeek returned {exc.response.status_code}"
                     last_exception = AIProviderError(msg)
                 else:
-                    msg = (
-                        f"DeepSeek returned {exc.response.status_code}: "
-                        f"{exc.response.text[:200]}"
-                    )
+                    msg = f"DeepSeek returned {exc.response.status_code}: {exc.response.text[:200]}"
                     raise AIProviderError(msg) from exc
             except httpx.RequestError as exc:
                 last_exception = AIProviderError(f"DeepSeek request failed: {exc}")

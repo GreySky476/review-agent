@@ -94,8 +94,7 @@ class AppSettings(BaseSettings):
     stale_review_timeout_minutes: int = Field(
         default=30,
         description=(
-            "评审超时回收时间（分钟）。"
-            "超过此时间的 PENDING/RUNNING 评审将被自动标记为 FAILED"
+            "评审超时回收时间（分钟）。超过此时间的 PENDING/RUNNING 评审将被自动标记为 FAILED"
         ),
     )
 

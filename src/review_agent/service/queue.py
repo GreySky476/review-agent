@@ -23,12 +23,14 @@ from review_agent.types.enums import ReviewStatus
 @dataclass
 class _ReviewResult:
     """评审结果（LangGraph 路径使用）。"""
+
     findings: list[DimensionFinding] = field(default_factory=list)
     score: int = 100
     summary_markdown: str = ""
     status: ReviewStatus = ReviewStatus.COMPLETED
     error_message: str | None = None
     reviewed_files: list[dict[str, str | None]] | None = None
+    reviewed_functions: list[dict[str, Any]] | None = None
 
 
 logger = logging.getLogger(__name__)
@@ -93,7 +95,10 @@ async def run_review(
     try:
         logger.info(
             "Starting PR review #%d for %s@%s (project=%s, incremental=%s)",
-            pr_number, repo_name, sha, project_id,
+            pr_number,
+            repo_name,
+            sha,
+            project_id,
             bool(previous_review_id),
         )
         settings = get_settings()
@@ -136,7 +141,8 @@ async def run_review(
                     await knowledge_base.load_rules(rules_data)
                     logger.info(
                         "Loaded %d rules into knowledge base for PR #%d",
-                        len(rules), pr_number,
+                        len(rules),
+                        pr_number,
                     )
         except Exception:
             logger.warning("Failed to load rules: %s", traceback.format_exc())
@@ -181,7 +187,9 @@ async def run_review(
                 if previous_review_id:
                     # 增量评审：追评到已有评论
                     incremental_summary = publisher.generate_incremental_summary(
-                        result.findings, result.score, sha,
+                        result.findings,
+                        result.score,
+                        sha,
                         unreviewed_count=0,
                     )
                     new_content = header + incremental_summary
@@ -191,25 +199,34 @@ async def run_review(
                         existing_cid = pr_record.pr_comment_id if pr_record else None
                         if existing_cid:
                             existing_body = await git_provider.get_issue_comment(
-                                repo_name, existing_cid,
+                                repo_name,
+                                existing_cid,
                             )
                             if existing_body is not None:
                                 updated = existing_body + f"\n\n---\n\n{new_content}"
                                 await git_provider.edit_issue_comment(
-                                    repo_name, existing_cid, updated,
+                                    repo_name,
+                                    existing_cid,
+                                    updated,
                                 )
                             else:
                                 comment_id = await git_provider.publish_summary_comment(
-                                    repo_name, pr_number, new_content,
+                                    repo_name,
+                                    pr_number,
+                                    new_content,
                                 )
                         else:
                             comment_id = await git_provider.publish_summary_comment(
-                                repo_name, pr_number, new_content,
+                                repo_name,
+                                pr_number,
+                                new_content,
                             )
                 else:
                     # 首次评审：创建新评论
                     comment_id = await git_provider.publish_summary_comment(
-                        repo_name, pr_number, header + result.summary_markdown,
+                        repo_name,
+                        pr_number,
+                        header + result.summary_markdown,
                     )
 
                 # 首次创建时保存 comment_id
@@ -217,19 +234,23 @@ async def run_review(
                     async with async_session_factory() as db:
                         pr_repo = PullRequestRepo(db)
                         await pr_repo.update_pr_comment_id(
-                            project_id, pr_number, comment_id,
+                            project_id,
+                            pr_number,
+                            comment_id,
                         )
                         await db.commit()
 
                 logger.info(
                     "Published PR summary for #%d (%d chars, comment=%s)",
-                    pr_number, len(result.summary_markdown),
+                    pr_number,
+                    len(result.summary_markdown),
                     comment_id or "appended",
                 )
             except Exception:
                 logger.warning(
                     "Failed to publish PR summary for #%d: %s",
-                    pr_number, traceback.format_exc(),
+                    pr_number,
+                    traceback.format_exc(),
                 )
                 await log_error(
                     error_type="publish_failed",
@@ -252,9 +273,7 @@ async def run_review(
                         error_message=result.error_message,
                     )
                     if result.reviewed_files is not None:
-                        await review_repo.update_reviewed_files(
-                            review_id, result.reviewed_files
-                        )
+                        await review_repo.update_reviewed_files(review_id, result.reviewed_files)
 
                     # 2. 写入 Findings
                     if result.findings:
@@ -273,14 +292,22 @@ async def run_review(
                             )
                             db.add(finding_record)
 
-                    # 3. 更新 PR last_reviewed_sha
+                    # 3. 写入 ReviewFunction records
+                    if result.reviewed_functions:
+                        from review_agent.repo.review_function import ReviewFunctionRepo
+
+                        func_repo = ReviewFunctionRepo(db)
+                        func_items = [
+                            {**item, "review_id": review_id} for item in result.reviewed_functions
+                        ]
+                        await func_repo.bulk_create(func_items)
+
+                    # 4. 更新 PR last_reviewed_sha
                     if pr_number:
                         pr_repo = PullRequestRepo(db)
-                        await pr_repo.update_reviewed_sha(
-                            project_id, pr_number, sha, review_id
-                        )
+                        await pr_repo.update_reviewed_sha(project_id, pr_number, sha, review_id)
 
-                    # 4. 同步 commit is_reviewed
+                    # 5. 同步 commit is_reviewed
                     from review_agent.repo.commit import CommitRepo
 
                     commit_obj = await CommitRepo(db).get_by_sha(project_id, sha)
@@ -291,11 +318,16 @@ async def run_review(
                     await db.commit()
                     logger.info(
                         "Review %s persisted: status=%s score=%d findings=%d",
-                        review_id, result.status.value, result.score, len(result.findings),
+                        review_id,
+                        result.status.value,
+                        result.score,
+                        len(result.findings),
                     )
             except Exception:
                 logger.warning(
-                    "Failed to persist review %s: %s", review_id, traceback.format_exc(),
+                    "Failed to persist review %s: %s",
+                    review_id,
+                    traceback.format_exc(),
                 )
                 await log_error(
                     error_type="db_write_failed",
@@ -306,7 +338,9 @@ async def run_review(
 
         logger.info(
             "PR review #%d completed: %d findings, score=%d",
-            pr_number, len(result.findings), result.score,
+            pr_number,
+            len(result.findings),
+            result.score,
         )
         return {
             "project_id": project_id,
@@ -335,7 +369,8 @@ async def run_review(
             except Exception:
                 logger.warning(
                     "Failed to mark review %s as failed: %s",
-                    review_id, traceback.format_exc(),
+                    review_id,
+                    traceback.format_exc(),
                 )
         raise
     finally:
@@ -441,7 +476,8 @@ async def run_commit_review(
             except Exception:
                 logger.warning(
                     "Failed to enrich patches for %s@%s, falling back to full review",
-                    repo_name, sha,
+                    repo_name,
+                    sha,
                 )
 
         # 转换 changed_files 为 PRFile 对象
@@ -523,7 +559,17 @@ async def run_commit_review(
                             )
                             db.add(finding_record)
 
-                    # 3. 同步 commit is_reviewed
+                    # 3. 写入 ReviewFunction records
+                    if result.reviewed_functions:
+                        from review_agent.repo.review_function import ReviewFunctionRepo
+
+                        func_repo = ReviewFunctionRepo(db)
+                        func_items = [
+                            {**item, "review_id": review_id} for item in result.reviewed_functions
+                        ]
+                        await func_repo.bulk_create(func_items)
+
+                    # 4. 同步 commit is_reviewed
                     from review_agent.repo.commit import CommitRepo
 
                     commit_obj = await CommitRepo(db).get_by_sha(project_id, sha)
@@ -534,11 +580,16 @@ async def run_commit_review(
                     await db.commit()
                     logger.info(
                         "Review %s persisted: status=%s score=%d findings=%d",
-                        review_id, result.status.value, result.score, len(result.findings),
+                        review_id,
+                        result.status.value,
+                        result.score,
+                        len(result.findings),
                     )
             except Exception:
                 logger.warning(
-                    "Failed to persist review %s: %s", review_id, traceback.format_exc(),
+                    "Failed to persist review %s: %s",
+                    review_id,
+                    traceback.format_exc(),
                 )
                 await log_error(
                     error_type="db_write_failed",
@@ -618,6 +669,8 @@ _DEFAULT_STATE: dict[str, Any] = {
     "last_reviewed_sha": None,
     "previous_file_paths": [],
     "previous_reviewed_files": [],
+    "previous_reviewed_functions": [],
+    "inter_commit_files": [],
     "skip_levels": "",
     "new_chunks": [],
 }
@@ -675,6 +728,55 @@ async def _run_with_langgraph(
         checkpointer=saver,
     )
 
+    # ── 函数级增量数据加载 ────────────────────────────
+    # 从 DB 加载 previous_reviewed_functions
+    prev_reviewed_functions: list[dict] = []
+    if previous_review_id:
+        try:
+            from review_agent.config.database import async_session_factory
+            from review_agent.repo.review_function import ReviewFunctionRepo
+
+            async with async_session_factory() as db:
+                func_repo = ReviewFunctionRepo(db)
+                func_records = await func_repo.list_by_review(previous_review_id)
+                for rec in func_records:
+                    prev_reviewed_functions.append(
+                        {
+                            "file_path": rec.file_path,
+                            "function_name": rec.function_name,
+                            "start_line": rec.start_line,
+                            "end_line": rec.end_line,
+                            "max_severity": rec.max_severity,
+                            "sha": rec.sha,
+                        }
+                    )
+        except Exception:
+            logger.warning(
+                "Failed to load previous_reviewed_functions: %s",
+                traceback.format_exc(),
+            )
+
+    # 加载 inter-commit diff（PR 增量场景，比较 last_reviewed_sha → sha）
+    inter_commit_files: list[PRFile] = []
+    if last_reviewed_sha and pr_number:
+        try:
+            inter_commit_files = await git_provider.get_compare_diff(
+                repo_name,
+                last_reviewed_sha,
+                sha,
+            )
+            logger.info(
+                "Loaded inter-commit diff: %s..%s -> %d files",
+                last_reviewed_sha[:8],
+                sha[:8],
+                len(inter_commit_files),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to load inter-commit diff: %s",
+                traceback.format_exc(),
+            )
+
     initial_state: dict[str, Any] = {
         "repo_name": repo_name,
         "sha": sha,
@@ -684,15 +786,13 @@ async def _run_with_langgraph(
         "last_reviewed_sha": last_reviewed_sha,
         "previous_file_paths": previous_file_paths or [],
         "previous_reviewed_files": previous_reviewed_files or [],
+        "previous_reviewed_functions": prev_reviewed_functions,
+        "inter_commit_files": inter_commit_files,
         "skip_levels": skip_levels,
         **_DEFAULT_STATE,
     }
 
-    thread_id = (
-        f"pr:{repo_name}:{pr_number}:{sha[:12]}"
-        if pr_number
-        else f"{repo_name}:{sha}"
-    )
+    thread_id = f"pr:{repo_name}:{pr_number}:{sha[:12]}" if pr_number else f"{repo_name}:{sha}"
     result_state = await graph.ainvoke(
         initial_state,
         {"configurable": {"thread_id": thread_id}},
@@ -711,11 +811,12 @@ async def _run_with_langgraph(
         )
 
     # 计算 reviewed_files
-    from review_agent.service.utils import compute_reviewed_files
+    from review_agent.service.utils import compute_reviewed_files, compute_reviewed_functions
 
     new_chunks = result_state.get("new_chunks", [])
     deduped = result_state.get("deduped_findings", [])
     reviewed_files = compute_reviewed_files(new_chunks, deduped)
+    reviewed_functions = compute_reviewed_functions(new_chunks, deduped, sha)
 
     has_issues = bool(unreviewed) or bool(error_msgs)
     status = ReviewStatus.COMPLETED_WITH_ERRORS if has_issues else ReviewStatus.COMPLETED
@@ -728,6 +829,7 @@ async def _run_with_langgraph(
             status=status,
             error_message="; ".join(error_msgs) if error_msgs else None,
             reviewed_files=reviewed_files,
+            reviewed_functions=reviewed_functions,
         )
     finally:
         _saver_cleanup()
@@ -908,7 +1010,10 @@ async def _on_job_failure(ctx: dict[str, Any]) -> None:
     )
     logger.error(
         "ARQ dead letter: job=%s func=%s args=%s error=%s",
-        job_id, function_name, args_summary, exc_str,
+        job_id,
+        function_name,
+        args_summary,
+        exc_str,
     )
 
 

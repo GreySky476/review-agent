@@ -95,7 +95,7 @@ def _extract_ast(source_code: str, parser: Any) -> list[dict[str, Any]]:
         """从 AST 节点中获取名称字符串。"""
         for child in node.children:
             if child.type in ("name", "identifier", "property_identifier", "field_identifier"):
-                return source_code[child.start_byte:child.end_byte]
+                return source_code[child.start_byte : child.end_byte]
             deeper = _find_name(child)
             if deeper:
                 return deeper
@@ -104,19 +104,25 @@ def _extract_ast(source_code: str, parser: Any) -> list[dict[str, Any]]:
     def _collect(node: Any) -> None:
         ntype = node.type
         if ntype in (
-            "function_definition", "function_declaration", "method_declaration",
-            "method_definition", "function_item",
-            "class_definition", "class_declaration",
+            "function_definition",
+            "function_declaration",
+            "method_declaration",
+            "method_definition",
+            "function_item",
+            "class_definition",
+            "class_declaration",
         ):
             name = _find_name(node)
             sl = node.start_point[0] + 1
             el = node.end_point[0] + 1
-            functions.append({
-                "name": name,
-                "code": "\n".join(lines[sl - 1:el]),
-                "start_line": sl,
-                "end_line": el,
-            })
+            functions.append(
+                {
+                    "name": name,
+                    "code": "\n".join(lines[sl - 1 : el]),
+                    "start_line": sl,
+                    "end_line": el,
+                }
+            )
             # Recurse into children to find nested functions/classes
             for child in node.children:
                 _collect(child)
@@ -161,12 +167,14 @@ def _extract_functions(source_code: str) -> list[dict[str, Any]]:
 
             if paren_depth <= 0 and line.strip() and not line[0].isspace():
                 code = "\n".join(current_func["lines"])
-                functions.append({
-                    "name": current_func["name"],
-                    "code": code,
-                    "start_line": current_func["start_line"],
-                    "end_line": i,
-                })
+                functions.append(
+                    {
+                        "name": current_func["name"],
+                        "code": code,
+                        "start_line": current_func["start_line"],
+                        "end_line": i,
+                    }
+                )
                 if func_pat.match(line):
                     name = match.group(2) if match else line.split("def ")[1].split("(")[0]
                     current_func = {"name": name, "start_line": i + 1, "lines": [line]}

@@ -13,7 +13,8 @@ from typing import Any
 
 from review_agent.config.settings import get_settings
 from review_agent.service.ai.base import AIProvider
-from review_agent.service.ai.types import AICompletionRequest, AIMessage
+from review_agent.service.ai.types import AICompletionRequest, AIMessage, BatchReviewEntry
+from review_agent.service.ai_resp_parser import parse_batch_response
 from review_agent.service.chunking import CodeChunk, adjust_line_number
 from review_agent.service.dimensions.base import DimensionFinding
 from review_agent.service.error_logger import log_error
@@ -120,8 +121,12 @@ class AIReviewer:
             logger.warning(
                 "Estimated tokens %d (system=%d + chunk=%d) approaching limit %d "
                 "for %s/%s, may cause timeout",
-                total_estimated, system_tokens, chunk.estimated_tokens,
-                max_tokens, chunk.file_path, chunk.function_name,
+                total_estimated,
+                system_tokens,
+                chunk.estimated_tokens,
+                max_tokens,
+                chunk.file_path,
+                chunk.function_name,
             )
 
         request = AICompletionRequest(
@@ -152,6 +157,107 @@ class AIReviewer:
                 ),
             )
             return []
+
+    async def review_chunks(
+        self,
+        entries: list[BatchReviewEntry],
+    ) -> list[list[DimensionFinding]]:
+        """批量评审多个代码块，一次 AI 调用完成所有评审。
+
+        适用于同一轮评审中多个代码块可合并为一次 AI 调用的场景，
+        减少 API 调用次数。每个 entry 通过 function_index 映射回各自的 findings。
+
+        Args:
+            entries: 待评审的批量条目列表。
+
+        Returns:
+            每个 entry 对应的 DimensionFinding 列表（list[list]，
+            与 entries 等长，未命中的 entry 返回空列表）。
+        """
+        if self._ai is None or not entries:
+            return [[] for _ in entries]
+
+        # 构建批量 prompt（使用 batch 专用格式，不继承 _AI_REVIEW_BASE_PROMPT）
+        _batch_response_format = (
+            "以 JSON 数组格式返回结果，不要包含其他内容：\n"
+            "```json\n"
+            "[\n"
+            "  {\n"
+            '    "function_index": 0,\n'
+            '    "findings": [\n'
+            "      {\n"
+            '        "severity": "critical|warning|info",\n'
+            '        "title": "简短标题",\n'
+            '        "description": "问题详细描述",\n'
+            '        "suggestion": "修复建议",\n'
+            '        "line": <行号或 null>\n'
+            "      }\n"
+            "    ]\n"
+            "  },\n"
+            "  ...\n"
+            "]\n"
+            "```\n"
+            "function_index 对应下方代码块的编号。"
+            "对没有发现问题的函数，返回 function_index 和空 findings 数组。"
+        )
+        system_parts: list[str] = [
+            "你是一位资深代码评审专家，请对下方多个代码块逐一进行评审。",
+            _batch_response_format,
+        ]
+
+        # 构建包含所有代码块的 user prompt
+        total_entries = len(entries)
+        user_parts: list[str] = [
+            f"请评审以下 {total_entries} 个函数/方法，"
+            "对每个函数按 function_index 编号输出 findings：\n",
+        ]
+        for idx, entry in enumerate(entries):
+            block = (
+                f"## 代码块 {idx}: {entry.file_path}\n"
+                f"### 文件: {entry.file_path}\n"
+                f"### 函数: {entry.function_name or '(anonymous)'}\n"
+                f"```\n{entry.source_code}\n```"
+            )
+            if entry.patch:
+                block += f"\n\n### Diff\n```diff\n{entry.patch}\n```"
+            if entry.matched_rules:
+                rules_block = "\n\n### 匹配的企业规则\n"
+                for r in entry.matched_rules:
+                    sev = r.get("severity", "info").upper()
+                    name = r.get("name", "")
+                    content = r.get("content", "")
+                    rules_block += f"- [{sev}] **{name}**: {content}\n"
+                block += rules_block
+            user_parts.append(block)
+
+        system_prompt = "\n\n".join(system_parts)
+        user_prompt = "\n\n".join(user_parts)
+
+        request = AICompletionRequest(
+            model=self._settings.ai_model_name,
+            messages=[
+                AIMessage(role="system", content=system_prompt),
+                AIMessage(role="user", content=user_prompt),
+            ],
+            temperature=0.1,
+            max_tokens=self._settings.ai_review_max_tokens,
+            timeout_seconds=self._settings.ai_request_timeout,
+        )
+
+        try:
+            response = await self._ai.complete(request)
+            return parse_batch_response(response.content, entries)
+        except Exception as exc:
+            logger.warning(
+                "Batch AI review failed for %d chunks: %s",
+                len(entries),
+                exc,
+            )
+            await log_error(
+                error_type="ai_call_failed",
+                error_message=(f"Batch AI review failed for {len(entries)} entries: {exc}"),
+            )
+            return [[] for _ in entries]
 
     @staticmethod
     def _try_parse_json(text: str) -> list[dict[str, Any]] | None:

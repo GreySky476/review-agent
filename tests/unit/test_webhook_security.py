@@ -62,6 +62,7 @@ class TestRedisRateLimiter:
             assert await limiter.check("192.168.1.1") is True
             assert await limiter.check("192.168.1.1") is False
             import asyncio
+
             await asyncio.sleep(1.1)
             assert await limiter.check("192.168.1.1") is True
 
@@ -69,6 +70,7 @@ class TestRedisRateLimiter:
     async def test_redis_error_fallback(self) -> None:
         from review_agent.service import webhook_security
         from review_agent.service.webhook_security import check_rate_limit
+
         old = webhook_security._limiter
         webhook_security._limiter = None
         try:
@@ -86,6 +88,7 @@ class TestRedisRateLimiter:
     async def test_memory_backend(self) -> None:
         from review_agent.service import webhook_security
         from review_agent.service.webhook_security import check_rate_limit
+
         old = webhook_security._limiter
         webhook_security._limiter = None
         try:

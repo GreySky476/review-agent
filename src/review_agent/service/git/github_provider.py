@@ -59,9 +59,7 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
             )
             raise
 
-    async def get_pr_commits(
-        self, repo_name: str, pr_number: int
-    ) -> list[dict[str, Any]]:
+    async def get_pr_commits(self, repo_name: str, pr_number: int) -> list[dict[str, Any]]:
         """获取 PR 的所有 commit 列表。
 
         Returns:
@@ -71,14 +69,16 @@ class GitHubProvider(GitProvider):  # type: ignore[misc]
             repo, pr = self._get_repo_and_pr(repo_name, pr_number)
             commits = []
             for c in pr.get_commits():
-                commits.append({
-                    "sha": c.sha,
-                    "message": (c.commit.message or "").split("\n")[0],
-                    "author": c.commit.author.name if c.commit.author else None,
-                    "date": c.commit.author.date.isoformat()
+                commits.append(
+                    {
+                        "sha": c.sha,
+                        "message": (c.commit.message or "").split("\n")[0],
+                        "author": c.commit.author.name if c.commit.author else None,
+                        "date": c.commit.author.date.isoformat()
                         if c.commit.author and c.commit.author.date
                         else None,
-                })
+                    }
+                )
             return commits
         except Exception as exc:
             logger.warning("Failed to fetch commits for %s#%d: %s", repo_name, pr_number, exc)

@@ -163,9 +163,7 @@ async def github_webhook(
         )
         await log_error(
             error_type="webhook_verify_failed",
-            error_message=(
-                f"Webhook rejected: client IP {client_ip} not in GitHub whitelist"
-            ),
+            error_message=(f"Webhook rejected: client IP {client_ip} not in GitHub whitelist"),
         )
         return JSONResponse(
             status_code=403,

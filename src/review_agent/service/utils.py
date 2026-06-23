@@ -72,3 +72,58 @@ def compute_reviewed_files(
                 file_max_sev[path] = "info"
 
     return [{"path": p, "max_severity": s} for p, s in file_max_sev.items()]
+
+
+def compute_reviewed_functions(
+    new_chunks: list[Any],
+    findings: list[Any],
+    sha: str,
+) -> list[dict[str, Any]]:
+    """从评审结果计算函数级评审记录。
+
+    对每个被评审的 chunk，统计其中 findings 的严重级别分布。
+
+    Args:
+        new_chunks: 本次实际评审的 chunk 列表（CodeChunk 对象）。
+        findings: 本次评审产出的 DimensionFinding 列表。
+        sha: 本次评审的 commit SHA。
+
+    Returns:
+        list[dict]: [{file_path, function_name, start_line, end_line,
+                       sha, max_severity, finding_count}, ...]
+    """
+    func_map: dict[tuple[str, str, int], dict[str, Any]] = {}
+    for chunk in new_chunks:
+        key = (chunk.file_path, chunk.function_name, chunk.start_line)
+        func_map[key] = {
+            "file_path": chunk.file_path,
+            "function_name": chunk.function_name,
+            "start_line": chunk.start_line,
+            "end_line": chunk.end_line,
+            "sha": sha,
+            "max_severity": None,
+            "finding_count": 0,
+        }
+
+    for finding in findings:
+        for key, data in func_map.items():
+            fp, fn, sl = key
+            if finding.file_path != fp:
+                continue
+            if data["start_line"] <= (finding.line_start or 0) <= data["end_line"]:
+                sev = (
+                    finding.severity.value
+                    if hasattr(finding.severity, "value")
+                    else finding.severity
+                )
+                current = data["max_severity"]
+                if current is None:
+                    data["max_severity"] = sev
+                elif sev == "critical" and current != "critical":
+                    data["max_severity"] = "critical"
+                elif sev == "warning" and current not in ("critical", "warning"):
+                    data["max_severity"] = "warning"
+                data["finding_count"] += 1
+                break
+
+    return list(func_map.values())

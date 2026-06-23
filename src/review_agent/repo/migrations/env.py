@@ -22,6 +22,7 @@ from review_agent.types.orm import (  # noqa: F401
     PullRequestModel,
     QualitySnapshot,
     ReviewErrorLog,
+    ReviewFunctionModel,
     ReviewModel,
     RuleModel,
     TeamMemberModel,

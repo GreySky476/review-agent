@@ -44,12 +44,14 @@ class ReviewState(TypedDict):
     target_files: list[PRFile]
     chunks: list[CodeChunk]
     source_codes: dict[str, str]
-    previous_review_id: str | None   # 上次评审的 review ID（增量用）
-    last_reviewed_sha: str | None    # 上次评到的 SHA（增量用）
-    previous_file_paths: list[str]   # 已弃用，保留兼容
+    previous_review_id: str | None  # 上次评审的 review ID（增量用）
+    last_reviewed_sha: str | None  # 上次评到的 SHA（增量用）
+    previous_file_paths: list[str]  # 已弃用，保留兼容
     previous_reviewed_files: list[dict]  # [{path, max_severity}] 增量分级决策
-    skip_levels: str                  # 跳过的严重级别（逗号分隔）
-    new_chunks: list[CodeChunk]      # 本次新增的 chunk，fanout/route 基于此
+    skip_levels: str  # 跳过的严重级别（逗号分隔）
+    previous_reviewed_functions: list[dict]  # [{file_path, fn, start, end, max_severity, sha}]
+    inter_commit_files: list[PRFile]  # diff last_reviewed_sha → head_sha for function change
+    new_chunks: list[CodeChunk]  # 本次新增的 chunk，fanout/route 基于此
 
     # ── 挂起的 chunk（由 Send 设置，节点读取后用 reducer 合并 findings） ──
     pending_chunk: CodeChunk | None

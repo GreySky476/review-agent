@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from typing import Any
 
 from review_agent.service.chunking import CodeChunk, chunk_file
+from review_agent.service.diff_utils import chunk_overlaps, get_changed_lines_map
 from review_agent.service.error_logger import log_error
 from review_agent.service.git.base import GitProvider
 from review_agent.service.publisher import Publisher
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 # ─── 第 1 步：文件过滤 ─────────────────────────────────────
+
 
 async def filter_files(state: ReviewState) -> dict[str, Any]:
     """按路径模式过滤文件，产出 target_files。"""
@@ -37,6 +40,7 @@ async def filter_files(state: ReviewState) -> dict[str, Any]:
 
 
 # ─── 第 2 步：拉取源码 + 分块 ──────────────────────────────
+
 
 async def fetch_and_chunk(
     state: ReviewState,
@@ -86,66 +90,117 @@ async def fetch_and_chunk(
 
 
 async def resolve_incremental(state: ReviewState) -> dict[str, Any]:
-    """按上一轮评审的严重级分级决策，过滤出本轮需要新评审的 chunk。
+    """函数级增量去重：基于函数行号与 diff 变更行重叠度 + 历史函数评审状态。
 
     决策规则：
-    - 新文件（不在上一轮记录中）→ 正常评审
-    - 上一轮 max_severity 为 critical/warning → 需验证修复 → 重新评审
-    - 上一轮 max_severity 为 info 或无问题 → 跳过
-
-    可通过 skip_levels 控制跳过哪些级别（逗号分隔）：
-    - critical: 跳过 critical 文件
-    - warning: 跳过 warning 文件
-    - info: 跳过 info 文件
-    - clean: 跳过无问题文件
+    1. 读取 inter_commit_files（或当前 files）的 diff 变更行
+    2. 对每个 chunk，检查函数行范围是否与变更行重叠
+    3. 有重叠 → 需评审
+    4. 无重叠且函数在 previous_reviewed_functions 中 → 跳过（已有评审记录）
+    5. 无重叠且函数不在 previous_reviewed_functions 但文件在 previous_reviewed_files 中
+       → 跳过（向后兼容）
+    6. 无重叠且函数不在 previous_reviewed_functions 且文件不在 previous_reviewed_files 中
+       → 新函数 → 评审
+    7. 模块级变更检测：如果变更行落在所有函数边界之外，强制重评整个文件
     """
     chunks = state.get("chunks", [])
-    prev_files = state.get("previous_reviewed_files", [])  # [{path, max_severity}]
-    skip_levels = state.get("skip_levels", "")
-    skip_set = {s.strip() for s in skip_levels.split(",") if s.strip()} if skip_levels else set()
+    previous_reviewed_functions = state.get("previous_reviewed_functions", [])
+    previous_reviewed_files = state.get("previous_reviewed_files", [])
+    inter_commit_files = state.get("inter_commit_files") or state.get("files", [])
 
-    if not prev_files:
-        new_chunks = chunks
-        logger.info("resolve_incremental: first review, all %d chunks are new", len(chunks))
-    else:
-        prev_map: dict[str, str | None] = {}
-        for f in prev_files:
-            path = f.get("path", "")
-            if path:
-                prev_map[path] = f.get("max_severity")
+    if not chunks:
+        logger.info("resolve_incremental: no chunks to resolve")
+        return {"new_chunks": []}
 
-        new_chunks = []
-        for c in chunks:
-            sev = prev_map.get(c.file_path)
-            if sev is None:
-                # 新文件 → 正常评审
-                new_chunks.append(c)
-            elif sev in ("critical", "warning") and sev not in skip_set:
-                # 需验证修复且未在跳过列表中 → 重新评审
-                new_chunks.append(c)
-            elif sev in ("info", None) and "clean" in skip_set:
-                # info 或无问题且在跳过列表中 → 跳过
-                continue
-            elif sev in ("critical", "warning"):
-                # critical/warning 但标记为跳过 → 跳过
-                continue
-            elif sev in ("info", None):
-                # info 或无问题且未跳过 → 直接跳过（默认行为）
-                continue
-            else:
-                new_chunks.append(c)
+    # 构建变更行映射
+    changed_lines_map = get_changed_lines_map(inter_commit_files)
 
-        skipped = len(chunks) - len(new_chunks)
-        if skipped:
-            logger.info(
-                "resolve_incremental: %d/%d chunks skipped (skip_levels=%s)",
-                skipped, len(chunks), skip_levels or "default",
+    # 构建历史函数索引：{(file_path, function_name): [entry, ...]}
+    prev_func_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for entry in previous_reviewed_functions:
+        fp = entry.get("file_path", "")
+        fn = entry.get("function_name", "")
+        if fp:
+            prev_func_index[(fp, fn)].append(entry)
+
+    # 构建历史文件索引（向后兼容）
+    prev_file_sev: dict[str, str | None] = {}
+    for entry in previous_reviewed_files:
+        path = entry.get("path", "")
+        if path:
+            prev_file_sev[path] = entry.get("max_severity")
+
+    # ── 模块级检测 ──────────────────────────────────
+    # 对每个文件，检查是否有变更行落在所有函数边界之外
+    file_chunks_map: dict[str, list[CodeChunk]] = defaultdict(list)
+    for c in chunks:
+        file_chunks_map[c.file_path].append(c)
+
+    module_force_review_files: set[str] = set()
+    for file_path, file_chunks in file_chunks_map.items():
+        changed = changed_lines_map.get(file_path)
+        if changed is not None and changed:
+            # 有明确变更行：检查是否至少有一个函数覆盖
+            has_function_overlap = any(
+                chunk_overlaps(c.start_line, c.end_line, changed) for c in file_chunks
             )
+            if not has_function_overlap:
+                # 变更完全在函数边界外 → 模块级变更
+                module_force_review_files.add(file_path)
+
+    # ── 逐 chunk 决策 ──────────────────────────────
+    new_chunks: list[CodeChunk] = []
+    for c in chunks:
+        # 模块级强制重评
+        if c.file_path in module_force_review_files:
+            new_chunks.append(c)
+            continue
+
+        changed = changed_lines_map.get(c.file_path)
+
+        # 检查与变更行重叠
+        if c.file_path in changed_lines_map and chunk_overlaps(c.start_line, c.end_line, changed):
+            new_chunks.append(c)
+            continue
+
+        # 无重叠：检查历史函数评审记录
+        func_key = (c.file_path, c.function_name)
+        if func_key in prev_func_index:
+            # 曾被评审过 → 跳过
+            continue
+
+        # 向后兼容：检查 previous_reviewed_files
+        if c.file_path in prev_file_sev:
+            prev_sev = prev_file_sev[c.file_path]
+            # 如果未使用函数级数据且文件有严重问题，依据 skip_levels 决定
+            if (
+                not previous_reviewed_functions
+                and prev_sev in ("critical", "warning")
+                and prev_sev not in skip_set
+            ):
+                new_chunks.append(c)
+                continue
+            continue
+
+        # 全新函数 → 评审
+        new_chunks.append(c)
+
+    skipped = len(chunks) - len(new_chunks)
+    if skipped:
+        logger.info(
+            "resolve_incremental: %d/%d chunks new, %d skipped (function-level)",
+            len(new_chunks),
+            len(chunks),
+            skipped,
+        )
+    else:
+        logger.info("resolve_incremental: all %d chunks are new", len(chunks))
 
     return {"new_chunks": new_chunks}
 
 
 # ─── 第 4 步：聚合 ─────────────────────────────────────────
+
 
 async def aggregate_findings(state: ReviewState) -> dict[str, Any]:
     """合并所有维度的 findings，去重 + 打分。"""
@@ -160,8 +215,8 @@ async def aggregate_findings(state: ReviewState) -> dict[str, Any]:
     # 失败文件惩罚：按未评审比例扣分（增量场景基于 new_chunks 对应的文件数）
     unreviewed = state.get("unreviewed_files", [])
     new_chunks = state.get("new_chunks", [])
-    reviewed_file_count = len({c.file_path for c in new_chunks}) if new_chunks else len(
-        state.get("target_files", [])
+    reviewed_file_count = (
+        len({c.file_path for c in new_chunks}) if new_chunks else len(state.get("target_files", []))
     )
     error_msgs: list[str] = []
 
@@ -193,6 +248,7 @@ async def aggregate_findings(state: ReviewState) -> dict[str, Any]:
 
 
 # ─── 第 6 步：生成摘要 ─────────────────────────────────────
+
 
 async def generate_summary(state: ReviewState) -> dict[str, Any]:
     """生成 Markdown 格式的评审摘要。"""
@@ -226,6 +282,7 @@ async def generate_summary(state: ReviewState) -> dict[str, Any]:
 
 
 # ─── 第 7 步：发布 ─────────────────────────────────────────
+
 
 async def publish_results(
     state: ReviewState,
