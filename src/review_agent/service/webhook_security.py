@@ -21,6 +21,7 @@ import time
 from typing import Any
 
 import httpx
+from redis.asyncio import Redis as _AsyncRedis
 
 from review_agent.config.settings import get_settings
 
@@ -231,11 +232,76 @@ class RateLimiter:
 _limiter: RateLimiter | None = None
 
 
+class RedisRateLimiter:
+    """Redis 后端的 per-IP 速率限制器（滑动窗口，Lua 脚本原子操作）。
+
+    Key 格式: ``ratelimit:{ip}``
+    使用 Sorted Set + Lua 脚本实现原子 ZREMRANGEBYSCORE + ZCARD + ZADD。
+
+    用法::
+
+        limiter = RedisRateLimiter()
+        if not await limiter.check("192.168.1.1"):
+            raise HTTPException(status_code=429)
+    """
+
+    _SCRIPT = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local max_req = tonumber(ARGV[3])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
+if redis.call('ZCARD', key) >= max_req then return 0 end
+redis.call('ZADD', key, now, now)
+redis.call('EXPIRE', key, window)
+return 1
+"""
+
+    def __init__(
+        self,
+        max_requests: int = _MAX_REQUESTS_PER_WINDOW,
+        window_seconds: int = _WINDOW_SECONDS,
+    ) -> None:
+        self._max_requests = max_requests
+        self._window_seconds = window_seconds
+
+    async def check(self, ip: str) -> bool:
+        """检查请求是否在限制范围内。
+
+        Args:
+            ip: 请求来源 IP 地址。
+
+        Returns:
+            True 表示未超限，False 表示已达速率上限。
+        """
+        settings = get_settings()
+        redis = _AsyncRedis.from_url(settings.redis_url)
+        try:
+            ok = await redis.eval(
+                self._SCRIPT,
+                1,
+                f"ratelimit:{ip}",
+                str(time.time()),
+                str(self._window_seconds),
+                str(self._max_requests),
+            )
+            return bool(ok)
+        finally:
+            await redis.aclose()
+
+
 async def check_rate_limit(ip: str) -> bool:
     """便捷函数：检查 IP 的速率限制。
 
-    使用全局单例，避免重复创建。
+    根据 ``webhook_rate_limiter_backend`` 配置选择后端。
+    Redis 后端失败时自动回退到内存实现。
     """
+    settings = get_settings()
+    if settings.webhook_rate_limiter_backend == "redis":
+        try:
+            return await RedisRateLimiter().check(ip)
+        except Exception:
+            logger.warning("Redis rate limit failed, falling back to memory")
     global _limiter  # noqa: PLW0603
     if _limiter is None:
         _limiter = RateLimiter()

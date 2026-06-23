@@ -639,6 +639,10 @@ async def _run_with_langgraph(
     skip_levels: str = "",
 ) -> Any:
     """使用 LangGraph 图执行评审（支持 PR 增量）。"""
+    from review_agent.service.review_graph.checkpointer import (
+        create_checkpointer,
+        create_postgres_checkpointer,
+    )
     from review_agent.service.review_graph.graph import build_review_graph
 
     logger.info(
@@ -649,10 +653,26 @@ async def _run_with_langgraph(
         "yes" if ai_provider else "no",
         "yes" if knowledge_base else "no",
     )
+
+    # 尝试使用 PostgresSaver（持久化），失败时降级到 MemorySaver
+    try:
+        saver_cm = create_postgres_checkpointer()
+        saver = await saver_cm.__aenter__()
+        try:
+            await saver.setup()
+        except Exception:
+            logger.debug("PostgresSaver setup skipped (tables may already exist)")
+        _saver_cleanup = lambda: saver_cm.__aexit__(None, None, None)  # noqa: E731
+    except Exception:
+        logger.info("PostgresSaver unavailable, falling back to MemorySaver")
+        saver = create_checkpointer()
+        _saver_cleanup = lambda: None  # noqa: E731
+
     graph = build_review_graph(
         git_provider=git_provider,
         ai_provider=ai_provider,
         knowledge_base=knowledge_base,
+        checkpointer=saver,
     )
 
     initial_state: dict[str, Any] = {
@@ -700,14 +720,17 @@ async def _run_with_langgraph(
     has_issues = bool(unreviewed) or bool(error_msgs)
     status = ReviewStatus.COMPLETED_WITH_ERRORS if has_issues else ReviewStatus.COMPLETED
 
-    return _ReviewResult(
-        findings=deduped,
-        score=result_state.get("score", 100),
-        summary_markdown=result_state.get("summary_markdown", ""),
-        status=status,
-        error_message="; ".join(error_msgs) if error_msgs else None,
-        reviewed_files=reviewed_files,
-    )
+    try:
+        return _ReviewResult(
+            findings=deduped,
+            score=result_state.get("score", 100),
+            summary_markdown=result_state.get("summary_markdown", ""),
+            status=status,
+            error_message="; ".join(error_msgs) if error_msgs else None,
+            reviewed_files=reviewed_files,
+        )
+    finally:
+        _saver_cleanup()
 
 
 async def enqueue_review(project_id: str, pr_number: int, head_sha: str) -> str | None:

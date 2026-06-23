@@ -65,6 +65,8 @@ def build_review_graph(
     git_provider: GitProvider,
     ai_provider: AIProvider | None = None,
     knowledge_base: Any = None,
+    *,
+    checkpointer: object | None = None,
 ) -> StateGraph:
     """构建 LangGraph 评审流水线。
 
@@ -72,6 +74,7 @@ def build_review_graph(
         git_provider: Git 平台适配器（GitHub / GitLab / Gitee）。
         ai_provider: AI 模型调用器。为 None 时 AI 评审节点跳过。
         knowledge_base: 知识库服务（可选），用于企业自定义规则检索。
+        checkpointer: 可选的检查点器。为 None 时使用默认的 MemorySaver。
 
     Returns:
         已编译可调用的 StateGraph。
@@ -126,7 +129,7 @@ def build_review_graph(
     builder.add_edge("aggregate", "summarize")
     builder.add_edge("summarize", END)
 
-    return builder.compile(checkpointer=create_checkpointer())
+    return builder.compile(checkpointer=checkpointer or create_checkpointer())
 
 
 async def _pass_through(state: ReviewState) -> dict[str, Any]:
