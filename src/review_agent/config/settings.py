@@ -84,7 +84,7 @@ class AppSettings(BaseSettings):
         description="评审跳过的路径模式（逗号分隔，glob 模式），支持 ** 递归匹配",
     )
     ai_batch_max_input_tokens: int = Field(
-        default=3000,
+        default=15000,
         description="单次批量调用的最大预估输入 token，0=禁用批量",
     )
     verbose_report_threshold: int = Field(

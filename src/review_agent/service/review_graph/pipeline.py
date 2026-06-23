@@ -107,6 +107,8 @@ async def resolve_incremental(state: ReviewState) -> dict[str, Any]:
     previous_reviewed_functions = state.get("previous_reviewed_functions", [])
     previous_reviewed_files = state.get("previous_reviewed_files", [])
     inter_commit_files = state.get("inter_commit_files") or state.get("files", [])
+    skip_levels = state.get("skip_levels", "")
+    skip_set = {s.strip() for s in skip_levels.split(",") if s.strip()} if skip_levels else set()
 
     if not chunks:
         logger.info("resolve_incremental: no chunks to resolve")
