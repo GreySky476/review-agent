@@ -323,7 +323,7 @@ async def trigger_pr_review(
                 pr_head_sha[:8],
                 pr_number,
                 review.id[:8],
-                review.status.value,
+                review.status,
             )
             return
         logger.info(
@@ -331,7 +331,7 @@ async def trigger_pr_review(
             pr_head_sha[:8],
             pr_number,
             review.id[:8],
-            review.status.value,
+            review.status,
         )
         # 重新入队（复用已有 review_id，新结果会覆盖 findings）
         await db.refresh(review)
@@ -339,7 +339,7 @@ async def trigger_pr_review(
     logger.info(
         "trigger_pr_review: review id=%s status=%s pr_title='%s' (is_new=%s)",
         review.id,
-        review.status.value if not is_new else review_status.value,
+        review.status if not is_new else review_status.value,
         pr_title,
         is_new,
     )
