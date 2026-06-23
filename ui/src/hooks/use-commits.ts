@@ -11,6 +11,8 @@ export interface Commit {
   is_reviewed: boolean
   review_id: string | null
   review_status: string | null
+  review_score: number | null
+  severity_breakdown: Record<string, number> | null
   create_time: string
 }
 
@@ -32,7 +34,7 @@ export function useCommits(
       return data
     },
     enabled: !!projectId,
-    staleTime: 2 * 60 * 1000,
+    staleTime: 30 * 1000,
   })
 }
 

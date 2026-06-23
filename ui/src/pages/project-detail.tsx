@@ -610,7 +610,8 @@ export function ProjectDetailPage() {
                   <th className="px-4 py-3 font-medium">作者</th>
                   <th className="px-4 py-3 font-medium">提交信息</th>
                   <th className="px-4 py-3 font-medium">分支</th>
-                  <th className="px-4 py-3 font-medium">Review</th>
+                  <th className="px-4 py-3 font-medium">严重级别</th>
+                  <th className="px-4 py-3 font-medium">分数</th>
                   <th className="px-4 py-3 font-medium">操作</th>
                 </tr>
               </thead>
@@ -618,7 +619,7 @@ export function ProjectDetailPage() {
                 {commitsLoading ? (
                   Array.from({ length: 3 }).map((_, i) => (
                     <tr key={i} className="border-b border-border/50">
-                      {Array.from({ length: 6 }).map((_, j) => (
+                      {Array.from({ length: 7 }).map((_, j) => (
                         <td key={j} className="px-4 py-4">
                           <Skeleton className="h-4 w-20" />
                         </td>
@@ -627,7 +628,7 @@ export function ProjectDetailPage() {
                   ))
                 ) : !commitsData?.items?.length ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-12">
+                    <td colSpan={7} className="px-4 py-12">
                       <EmptyState
                         title="暂无提交记录"
                         description="提交数据将在接入 Webhook 后自动同步"
@@ -635,7 +636,7 @@ export function ProjectDetailPage() {
                     </td>
                   </tr>
                 ) : (
-                  commitsData.items.map((commit: { id: string; sha: string; author: string | null; message: string | null; branch: string | null; is_reviewed: boolean; review_id: string | null }) => (
+                  commitsData.items.map((commit: { id: string; sha: string; author: string | null; message: string | null; branch: string | null; is_reviewed: boolean; review_id: string | null; review_score: number | null; severity_breakdown: Record<string, number> | null }) => (
                     <tr
                       key={commit.id}
                       className="border-b border-border/50 transition-colors hover:bg-surface-hover/50 cursor-pointer"
@@ -656,8 +657,18 @@ export function ProjectDetailPage() {
                         )}
                       </td>
                       <td className="px-4 py-4">
-                        {commit.is_reviewed ? (
-                          <Badge variant="success">已评审</Badge>
+                        <SeverityBadges breakdown={commit.severity_breakdown} />
+                      </td>
+                      <td className="px-4 py-4">
+                        {commit.is_reviewed && commit.review_score != null ? (
+                          <span className={cn(
+                            'text-sm font-medium',
+                            commit.review_score >= 90 ? 'text-success' : commit.review_score >= 70 ? 'text-warning' : 'text-error',
+                          )}>
+                            {commit.review_score}
+                          </span>
+                        ) : commit.is_reviewed ? (
+                          <Badge variant="success">✓</Badge>
                         ) : (
                           <Badge variant="warning">待评审</Badge>
                         )}

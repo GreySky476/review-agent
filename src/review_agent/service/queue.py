@@ -9,8 +9,9 @@ from typing import Any
 
 from arq import create_pool
 from arq.connections import RedisSettings
+from redis.asyncio import Redis as aioredis  # noqa: N813
 
-from review_agent.config.logging import setup_logging
+from review_agent.config.logging import setup_logging, setup_opentelemetry
 from review_agent.config.settings import get_settings
 from review_agent.service.dimensions.base import DimensionFinding
 from review_agent.service.error_logger import log_error
@@ -34,9 +35,14 @@ logger = logging.getLogger(__name__)
 
 
 async def _worker_startup(_ctx: dict[str, Any]) -> None:
-    """ARQ Worker 启动时配置日志（独立进程，默认日志级别为 WARNING）。"""
+    """ARQ Worker 启动时配置日志和 OTEL（独立进程）。"""
     settings = get_settings()
     setup_logging(level=settings.log_level)
+    setup_opentelemetry(
+        service_name=settings.otel_service_name,
+        endpoint=settings.otel_exporter_otlp_endpoint,
+        enabled=settings.otel_enabled,
+    )
     logger.info("ARQ worker started: log_level=%s", settings.log_level)
 
 
@@ -68,6 +74,21 @@ async def run_review(
 
     _status_completed = ReviewStatus.COMPLETED
     _status_failed = ReviewStatus.FAILED
+
+    # ── 分布式锁：防止同一 SHA 被多个 Worker 同时处理 ──
+    lock_key = f"lock:review:{project_id}:{sha[:12]}"
+    redis_client = None
+    try:
+        redis_client = await aioredis.from_url(
+            get_settings().redis_url, encoding="utf-8", decode_responses=True
+        )
+        locked = await redis_client.setnx(lock_key, "1")
+        if not locked:
+            logger.info("SHA %s already locked by another worker, skipping", sha[:8])
+            return {"status": "skipped", "reason": "locked", "sha": sha}
+        await redis_client.expire(lock_key, 300)
+    except Exception:
+        logger.debug("Distributed lock unavailable, proceeding without lock")
 
     try:
         logger.info(
@@ -316,14 +337,11 @@ async def run_review(
                     "Failed to mark review %s as failed: %s",
                     review_id, traceback.format_exc(),
                 )
-        return {
-            "project_id": project_id,
-            "pr_number": pr_number,
-            "sha": sha,
-            "status": ReviewStatus.FAILED.value,
-            "error": f"review_failed: {error_msg[:200]}",
-            "review_id": review_id,
-        }
+        raise
+    finally:
+        if redis_client:
+            await redis_client.delete(lock_key)
+            await redis_client.aclose()
 
 
 async def run_commit_review(
@@ -344,6 +362,21 @@ async def run_commit_review(
 
     _status_completed = ReviewStatus.COMPLETED
     _status_failed = ReviewStatus.FAILED
+
+    # ── 分布式锁：防止同一 SHA 被多个 Worker 同时处理 ──
+    lock_key = f"lock:review:{project_id}:{sha[:12]}"
+    redis_client = None
+    try:
+        redis_client = await aioredis.from_url(
+            get_settings().redis_url, encoding="utf-8", decode_responses=True
+        )
+        locked = await redis_client.setnx(lock_key, "1")
+        if not locked:
+            logger.info("SHA %s already locked by another worker, skipping", sha[:8])
+            return {"status": "skipped", "reason": "locked", "sha": sha}
+        await redis_client.expire(lock_key, 300)
+    except Exception:
+        logger.debug("Distributed lock unavailable, proceeding without lock")
 
     try:
         logger.info("Starting commit review for %s@%s (project=%s)", repo_name, sha, project_id)
@@ -556,13 +589,11 @@ async def run_commit_review(
                     project_id=project_id,
                     review_id=review_id,
                 )
-        return {
-            "project_id": project_id,
-            "sha": sha,
-            "status": ReviewStatus.FAILED.value,
-            "error": f"review_failed: {error_msg[:200]}",
-            "review_id": review_id,
-        }
+        raise
+    finally:
+        if redis_client:
+            await redis_client.delete(lock_key)
+            await redis_client.aclose()
 
 
 _DEFAULT_STATE: dict[str, Any] = {
@@ -832,6 +863,32 @@ def _extract_repo_name_from_url(repo_url: str) -> str | None:
     return None
 
 
+async def _on_job_failure(ctx: dict[str, Any]) -> None:
+    """ARQ Job 最终失败回调（所有重试耗尽后调用）。
+
+    记录死信信息到 review_errors 表，供运维排查。
+    """
+    job_id = ctx.get("job_id", "?")
+    function_name = ctx.get("function_name", "?")
+    exc_info = ctx.get("exc_info")
+    exc_str = str(exc_info[1]) if exc_info and exc_info[1] else "Unknown error"
+    args = ctx.get("args", [])
+    args_summary = ", ".join(str(a)[:50] for a in args[:3])
+
+    await log_error(
+        error_type="arq_job_failed",
+        error_message=(
+            f"ARQ job {job_id} failed after all retries: "
+            f"{function_name}({args_summary}) -> {exc_str}"
+        ),
+        error_detail=traceback.format_exc() if exc_info else None,
+    )
+    logger.error(
+        "ARQ dead letter: job=%s func=%s args=%s error=%s",
+        job_id, function_name, args_summary, exc_str,
+    )
+
+
 class WorkerSettings:
     """ARQ Worker 配置。
 
@@ -842,4 +899,9 @@ class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(get_settings().arq_redis_url)
     keep_result_seconds = 7 * 86400
     keep_result_hours = 7 * 24
+    job_retry = get_settings().arq_job_retry
+    job_retry_after = get_settings().arq_job_retry_after
+    max_jobs = 5
+    job_timeout = 600
     on_startup = _worker_startup
+    on_failure = _on_job_failure

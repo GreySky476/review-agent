@@ -49,13 +49,19 @@ def setup_logging(level: str = "INFO") -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
-def setup_opentelemetry(service_name: str, endpoint: str, enabled: bool = False) -> None:
+def setup_opentelemetry(
+    service_name: str,
+    endpoint: str,
+    enabled: bool = False,
+    app: Any = None,
+) -> None:
     """初始化 OpenTelemetry。
 
     Args:
         service_name: 服务名（用于在追踪系统中标识）。
         endpoint: OTLP HTTP 导出端点。
-        enabled: 是否启用导出。False 时只创建 TracerProvider 但不导出。
+        enabled: 是否启用导出。False 时跳过所有初始化。
+        app: 可选 FastAPI 应用实例。传入后自动注册 FastAPI 仪表。
     """
     if not enabled:
         return
@@ -74,3 +80,23 @@ def setup_opentelemetry(service_name: str, endpoint: str, enabled: bool = False)
         trace.set_tracer_provider(provider)
     except Exception as exc:
         logging.getLogger(__name__).warning("Failed to setup OpenTelemetry: %s", exc)
+        return
+
+    # FastAPI 仪表（lazy import）
+    if app is not None:
+        try:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+            FastAPIInstrumentor.instrument_app(app)
+            logging.getLogger(__name__).info("OpenTelemetry: FastAPI instrumented")
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Failed to instrument FastAPI: %s", exc)
+
+    # httpx 仪表（lazy import）
+    try:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+        HTTPXClientInstrumentor().instrument()
+        logging.getLogger(__name__).info("OpenTelemetry: httpx instrumented")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Failed to instrument httpx: %s", exc)

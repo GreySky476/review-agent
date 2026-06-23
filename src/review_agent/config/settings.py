@@ -40,6 +40,14 @@ class AppSettings(BaseSettings):
     arq_redis_url: str = Field(
         default="redis://localhost:6379/1", description="Arq 使用的 Redis 连接串"
     )
+    arq_job_retry: int = Field(
+        default=3,
+        description="ARQ 任务失败最大重试次数",
+    )
+    arq_job_retry_after: int = Field(
+        default=60,
+        description="ARQ 任务重试间隔（秒）",
+    )
 
     # ── AI 模型 ──────────────────────────────────────────
     ai_model_name: str = Field(default="deepseek-v4-flash", description="主 AI 模型名称")
@@ -99,6 +107,10 @@ class AppSettings(BaseSettings):
         description="服务公网地址（用于 Webhook 连通性验证）",
     )
     # ── Webhook 安全 ──────────────────────────────────────
+    webhook_rate_limiter_backend: str = Field(
+        default="redis",
+        description="Webhook 速率限制后端：redis（推荐，跨进程共享）或 memory（单进程）",
+    )
     webhook_ip_whitelist_enabled: bool = Field(
         default=True,
         description="启用 GitHub Webhook IP 白名单检查",
@@ -110,7 +122,7 @@ class AppSettings(BaseSettings):
 
     # ── 健康检查 ─────────────────────────────────────────
     health_check_interval_minutes: int = Field(
-        default=1,
+        default=5,
         description="平台连通性心跳检测间隔（分钟），设为 0 禁用",
     )
     webhook_health_interval_minutes: int = Field(
@@ -127,7 +139,7 @@ class AppSettings(BaseSettings):
         default="http://localhost:4318",
         description="OTLP 导出端点",
     )
-    otel_enabled: bool = Field(default=False, description="是否启用 OpenTelemetry")
+    otel_enabled: bool = Field(default=True, description="是否启用 OpenTelemetry")
 
 
 _settings: AppSettings | None = None

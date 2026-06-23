@@ -33,10 +33,28 @@
 
 1. **理解任务**：阅读相关文档，理解模块边界
 2. **制定计划**：拆分为 2-5 分钟小任务，写入 `docs/plans/current.md`
-3. **实现**：按 `types → config → repo → service → api → ui` 顺序实现
-4. **测试**：每个模块实现后立即编写测试
-5. **验证**：运行 `make verify`
-6. **归档**：将 `current.md` 移至 `docs/plans/archive/YYYY-MM/`
+   - 每个任务标注 `[delegatable]` 或 `[no-delegate]`
+   - 标注 `dependency`（阻塞依赖）和 `parallelizable-with`（可并行）
+3. **委派调度**：`[delegatable]` 的任务交子 Agent 隔离执行
+   - 同层不同文件 → 可并行启动子 Agent
+   - 下层完成后跨层 → 可与当前层并行
+   - 依赖链强制串行：`types → config → repo → service → api → ui`
+   - 每完成一个子任务，将摘要更新到 current.md
+4. **实现**：按 `types → config → repo → service → api → ui` 顺序实现，`[no-delegate]` 的任务主会话直接执行
+5. **测试**：每个模块实现后立即编写测试（可与实现并行执行）
+6. **集成验证**：运行 `ruff check . && mypy src/ && pytest`
+7. **归档**：将 `current.md` 移至 `docs/plans/archive/YYYY-MM/`
+
+### 委派标记说明
+
+| 标记 | 含义 | 执行者 |
+|------|------|--------|
+| `[delegatable]` | 文件读写+代码生成，可交子 Agent | 子 Agent |
+| `[no-delegate]` | 架构决策/计划更新/版本控制 | 主 Agent |
+| `dependency: P1` | 阻塞依赖，P1 完成后才启动 | 调度参考 |
+| `parallelizable-with: P2` | 可与 P2 同时启动 | 调度参考 |
+
+委派协议完整文档见 `docs/architecture/agent-execution-mode.md`。
 
 ## 代码生成规范
 

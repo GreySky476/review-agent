@@ -56,17 +56,20 @@ def create_app() -> FastAPI:
     """创建并配置 FastAPI 应用实例。"""
     settings = get_settings()
     setup_logging(level=settings.log_level)
-    setup_opentelemetry(
-        service_name=settings.otel_service_name,
-        endpoint=settings.otel_exporter_otlp_endpoint,
-        enabled=settings.otel_enabled,
-    )
 
     app = FastAPI(
         title=settings.app_name,
         version="0.1.0",
         docs_url="/docs",
         lifespan=lifespan,
+    )
+
+    # 在 app 创建后初始化 OTEL（需要 app 实例注册 FastAPI 仪表）
+    setup_opentelemetry(
+        service_name=settings.otel_service_name,
+        endpoint=settings.otel_exporter_otlp_endpoint,
+        enabled=settings.otel_enabled,
+        app=app,
     )
 
     app.add_middleware(
