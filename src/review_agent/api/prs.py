@@ -413,6 +413,7 @@ async def trigger_pr_review(
         )
 
     # 3. SHA 去重检查
+    force_reuse_review = False
     try:
         review_repo_instance = ReviewRepo(db)
         existing_shas = await review_repo_instance.get_by_head_sha(pr_head_sha)
@@ -445,9 +446,15 @@ async def trigger_pr_review(
                         },
                         status_code=409,
                     )
-                # force=true: 软删除旧 review
-                logger.info("Force re-review: soft-deleting old review %s", existing_shas.id[:8])
-                await review_repo_instance.soft_delete(existing_shas.id)
+                # force=true: 复用现有 review 记录，清空旧 findings
+                logger.info("Force re-review: reusing existing review %s", existing_shas.id[:8])
+                # 更新状态为 PENDING，允许重新入队
+                existing_shas.status = ReviewStatus.PENDING
+                existing_shas.score = None
+                existing_shas.findings_count = 0
+                existing_shas.error_message = None
+                existing_shas.task_id = None
+                force_reuse_review = True
     except Exception:
         logger.debug("Failed to check SHA dedup: %s", exc_info=True)
 
@@ -511,17 +518,21 @@ async def trigger_pr_review(
     except Exception:
         logger.debug("Failed to load previous review context: %s", exc_info=True)
 
-    # 6. 创建评审记录
+    # 6. 创建评审记录（force 路径已在第 3 步复用现有 record）
     review_repo = ReviewRepo(db)
-    review = await review_repo.create(
-        project_id=project_id,
-        pr_number=pr_number,
-        pr_title=f"PR #{pr_number}",
-        head_sha=pr_head_sha,
-        status=ReviewStatus.PENDING,
-        task_id=None,
-    )
-    logger.info("Review record created: id=%s pr=#%d", review.id, pr_number)
+    if not force_reuse_review:
+        review = await review_repo.create(
+            project_id=project_id,
+            pr_number=pr_number,
+            pr_title=f"PR #{pr_number}",
+            head_sha=pr_head_sha,
+            status=ReviewStatus.PENDING,
+            task_id=None,
+        )
+        logger.info("Review record created: id=%s pr=#%d", review.id, pr_number)
+    else:
+        review = existing_shas
+        logger.info("Review record reused: id=%s pr=#%d (force mode)", review.id, pr_number)
 
     # 7. 加入评审队列（PR 增量通道，含 reviewed_files）
     task_id = await enqueue_pr_review(
