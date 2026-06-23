@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from review_agent.api.webhook_helpers import (
@@ -19,10 +20,17 @@ from review_agent.api.webhook_helpers import (
     parse_event_action,
     sync_pull_request,
     trigger_pr_review,
+    verify_github_signature,
 )
 from review_agent.config.database import get_session
+from review_agent.config.settings import get_settings
 from review_agent.repo.project import ProjectRepo
 from review_agent.service.error_logger import log_error
+from review_agent.service.webhook_security import (
+    check_payload_size,
+    check_rate_limit,
+    is_github_request,
+)
 from review_agent.types.enums import EventAction, Platform
 
 logger = logging.getLogger(__name__)
@@ -35,10 +43,30 @@ async def github_webhook(
     request: Request,
     x_github_event: str | None = Header(None),
     x_github_delivery: str | None = Header(None),
+    x_hub_signature_256: str | None = Header(None),
     db: AsyncSession = Depends(get_session),
-) -> dict[str, str]:
-    """接收 GitHub Webhook 事件。"""
+) -> Any:
+    """接收 GitHub Webhook 事件。
+
+    安全要求：
+    - 若项目配置了 webhook_secret，所有 push/pull_request 事件需通过签名验证
+    - 签名验证失败的请求返回 403
+    - ping 事件和后向兼容（无 secret 的项目）不验证
+    """
     raw = await request.body()
+
+    # ── Payload 大小限制 ──
+    content_length: int | None = None
+    cl_header = request.headers.get("content-length")
+    if cl_header and cl_header.isdigit():
+        content_length = int(cl_header)
+    if not check_payload_size(content_length, raw):
+        logger.warning("Webhook payload too large: %d bytes", len(raw))
+        return JSONResponse(
+            status_code=413,
+            content={"status": "rejected", "reason": "payload_too_large"},
+        )
+
     try:
         payload: dict[str, Any] = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -50,12 +78,99 @@ async def github_webhook(
         return {"status": "ignored", "reason": "invalid_json"}
     event_id = x_github_delivery or str(uuid4())
     delivery_label = event_id[:8]
+    client_ip = request.client.host if request.client else ""
 
     logger.info(
-        "Webhook[%s] received: event=%s",
+        "Webhook[%s] received: event=%s from=%s",
         delivery_label,
         x_github_event,
+        client_ip or "unknown",
     )
+
+    # ── 速率限制检查 ──
+    settings = get_settings()
+    should_rate_limit = settings.webhook_rate_limiter_enabled and client_ip
+    if should_rate_limit and not await check_rate_limit(client_ip):
+        logger.warning(
+            "Webhook[%s] rate limit exceeded for IP=%s",
+            delivery_label,
+            client_ip,
+        )
+        await log_error(
+            error_type="webhook_verify_failed",
+            error_message=f"Rate limit exceeded for IP {client_ip}",
+        )
+        return JSONResponse(
+            status_code=429,
+            content={"status": "rejected", "reason": "rate_limited"},
+        )
+
+    # ── 签名验证（仅对 push/pull_request 事件，ping 跳过） ──
+    if x_hub_signature_256 and x_github_event in ("push", "pull_request"):
+        repo_full_name = extract_repo_full_name(Platform.GITHUB, payload)
+        if repo_full_name:
+            repo_url = f"https://github.com/{repo_full_name}"
+            project = await ProjectRepo(db).get_by_platform_repo(Platform.GITHUB, repo_url)
+            if project and project.webhook_secret:
+                if not verify_github_signature(raw, x_hub_signature_256, project.webhook_secret):
+                    logger.warning(
+                        "Webhook[%s] signature verification FAILED for repo=%s",
+                        delivery_label,
+                        repo_full_name,
+                    )
+                    await log_error(
+                        error_type="webhook_verify_failed",
+                        error_message=(
+                            f"GitHub webhook signature verification failed for {repo_full_name}"
+                        ),
+                        project_id=project.id,
+                    )
+                    return JSONResponse(
+                        status_code=403,
+                        content={"status": "rejected", "reason": "invalid_signature"},
+                    )
+                logger.debug(
+                    "Webhook[%s] signature verified for repo=%s project=%s",
+                    delivery_label,
+                    repo_full_name,
+                    project.id,
+                )
+            elif project and not project.webhook_secret:
+                logger.debug(
+                    "Webhook[%s] no secret configured for project %s, skipping verification",
+                    delivery_label,
+                    project.id,
+                )
+        else:
+            logger.debug(
+                "Webhook[%s] cannot extract repo, skipping signature verification",
+                delivery_label,
+            )
+
+    # ── IP 白名单检查（仅 push/pull_request 事件） ──
+    # 注：生产环境宜在反向代理层（ALB/nginx）配置 X-Forwarded-For，
+    # 此处使用 request.client.host 直接可用
+    should_check_ip = (
+        settings.webhook_ip_whitelist_enabled
+        and x_github_event in ("push", "pull_request")
+        and client_ip
+    )
+    if should_check_ip and not await is_github_request(client_ip):
+        logger.warning(
+            "Webhook[%s] IP %s not in GitHub whitelist, rejecting",
+            delivery_label,
+            client_ip,
+        )
+        await log_error(
+            error_type="webhook_verify_failed",
+            error_message=(
+                f"Webhook rejected: client IP {client_ip} not in GitHub whitelist"
+            ),
+        )
+        return JSONResponse(
+            status_code=403,
+            content={"status": "rejected", "reason": "ip_not_whitelisted"},
+        )
 
     # ── ping ──
     if x_github_event == "ping":

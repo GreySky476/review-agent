@@ -95,6 +95,16 @@ class AppSettings(BaseSettings):
         default="http://localhost:8000",
         description="服务公网地址（用于 Webhook 连通性验证）",
     )
+    # ── Webhook 安全 ──────────────────────────────────────
+    webhook_ip_whitelist_enabled: bool = Field(
+        default=True,
+        description="启用 GitHub Webhook IP 白名单检查",
+    )
+    webhook_rate_limiter_enabled: bool = Field(
+        default=True,
+        description="启用 Webhook 端点速率限制",
+    )
+
     # ── 健康检查 ─────────────────────────────────────────
     health_check_interval_minutes: int = Field(
         default=1,
