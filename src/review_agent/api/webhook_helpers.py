@@ -63,6 +63,10 @@ async def ensure_project_connected(
             error_message=f"No project matching repo_url: {repo_url}",
         )
         return None
+    if not project.webhook_enabled:
+        project.webhook_enabled = True
+        await db.flush()
+        logger.info("Marked project %s webhook as connected", project.id)
     event_repo = WebhookEventRepo(db)
     await event_repo.create_from_payload(
         project_id=project.id,
@@ -99,7 +103,10 @@ async def handle_push_event(
     if not project:
         logger.warning("No project found for repo: %s", repo_url)
         return {"status": "ignored", "reason": "no_project"}
-    await mark_webhook_connected(project, db)
+    if not project.webhook_enabled:
+        project.webhook_enabled = True
+        await db.flush()
+        logger.info("Marked project %s webhook as connected", project.id)
     head_commit: dict[str, Any] = payload.get("head_commit") or {}
     if not head_commit.get("id"):
         return {"status": "ignored", "reason": "no_head_commit"}
@@ -155,14 +162,20 @@ async def handle_push_event(
             committed_at=committed_at,
         )
     review_repo = ReviewRepo(db)
-    review = await review_repo.create(
+    review, is_new = await review_repo.create_or_get(
         project_id=project.id,
         pr_number=None,
-        pr_title=head_commit.get("message", f"Push {branch}: {sha[:8]}"),
         head_sha=sha,
+        pr_title=f"Push {branch}: {sha[:8]}",
         status=ReviewStatus.PENDING,
         task_id=None,
     )
+    if not is_new:
+        logger.info(
+            "Commit %s already has a review %s, skipping push review",
+            sha[:8], review.id[:8],
+        )
+        return {"status": "accepted", "sha": sha, "task_id": ""}
     try:
         task_id = await enqueue_commit_review(
             project_id=project.id,
@@ -208,25 +221,6 @@ async def trigger_pr_review(
             pr_title = pr_record.title
     except Exception:
         logger.debug("trigger_pr_review: failed to load PR title", exc_info=True)
-
-    # SHA 去重：COMPLETED/PENDING/RUNNING 状态均跳过，FAILED 允许重试
-    try:
-        existing = await ReviewRepo(db).get_by_sha(
-            project_id, pr_number, pr_head_sha
-        )
-        if existing and existing.status in (
-            ReviewStatus.COMPLETED,
-            ReviewStatus.COMPLETED_WITH_ERRORS,
-            ReviewStatus.PENDING,
-            ReviewStatus.RUNNING,
-        ):
-            logger.info(
-                "SHA %s for PR #%d already has review %s (status=%s), skipping",
-                pr_head_sha[:8], pr_number, existing.id[:8], existing.status.value,
-            )
-            return
-    except Exception:
-        logger.debug("Failed to check SHA dedup: %s", exc_info=True)
 
     try:
         git = GitHubProvider()
@@ -285,17 +279,23 @@ async def trigger_pr_review(
     except Exception:
         logger.debug("trigger_pr_review: failed to load previous review context", exc_info=True)
 
-    # 创建评审记录
+    # 原子创建评审记录（利用数据库唯一约束防止重复）
     review_repo = ReviewRepo(db)
     review_status = ReviewStatus.PENDING if all_files else ReviewStatus.FAILED
-    review = await review_repo.create(
+    review, is_new = await review_repo.create_or_get(
         project_id=project_id,
         pr_number=pr_number,
-        pr_title=pr_title,
         head_sha=pr_head_sha,
+        pr_title=pr_title,
         status=review_status,
         task_id=None,
     )
+    if not is_new:
+        logger.info(
+            "SHA %s for PR #%d already has review %s, skipping",
+            pr_head_sha[:8], pr_number, review.id[:8],
+        )
+        return
     logger.info(
         "trigger_pr_review: review created: id=%s status=%s pr_title='%s'",
         review.id,

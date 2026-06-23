@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from review_agent.repo.finding import FindingRepo
 from review_agent.repo.project import ProjectRepo
@@ -10,7 +11,8 @@ from review_agent.repo.review import ReviewRepo
 from review_agent.repo.rule import RuleRepo
 from review_agent.repo.user import UserRepo
 from review_agent.repo.webhook_event import WebhookEventRepo
-from review_agent.types.enums import FindingCategory, Platform
+from review_agent.types.enums import FindingCategory, Platform, ReviewStatus
+from review_agent.types.orm import Base, ReviewModel
 
 
 def make_result_mock(scalars_return: list | None = None) -> MagicMock:
@@ -79,6 +81,61 @@ class TestReviewRepo:
         repo = ReviewRepo(db)
         await repo.get_by_head_sha("abc123")
         db.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_or_get_create(self, db):
+        """create_or_get 在无冲突时应创建新记录。"""
+        repo = ReviewRepo(db)
+        rev, is_new = await repo.create_or_get(
+            project_id="p1",
+            pr_number=1,
+            head_sha="abc123",
+            status=ReviewStatus.PENDING,
+        )
+        assert is_new is True
+        db.add.assert_called_once()
+        db.flush.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_list_stale(self, db):
+        """list_stale 应查询超时的 PENDING/RUNNING 评审。"""
+        repo = ReviewRepo(db)
+        result = await repo.list_stale(timeout_minutes=30)
+        db.execute.assert_awaited_once()
+        assert isinstance(result, list)
+
+    @pytest.mark.asyncio
+    async def test_batch_mark_failed(self, db):
+        """batch_mark_failed 应批量更新状态为 FAILED。"""
+        repo = ReviewRepo(db)
+        await repo.batch_mark_failed(
+            ["id-1", "id-2"],
+            error_message="Test recovery",
+        )
+        db.execute.assert_awaited_once()
+        db.flush.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_or_get_get(self, db):
+        """create_or_get 在约束冲突时应返回已有记录（降级）。"""
+        db = AsyncMock()
+        db.flush.side_effect = IntegrityError("stmt", {}, Base())
+        existing = MagicMock(spec=ReviewModel)
+        existing.id = "existing-id"
+
+        async def _get_by_sha(*_a, **_kw):
+            return existing
+
+        repo = ReviewRepo(db)
+        repo.get_by_sha = _get_by_sha  # type: ignore[assignment]
+        rev, is_new = await repo.create_or_get(
+            project_id="p1",
+            pr_number=1,
+            head_sha="abc123",
+        )
+        assert is_new is False
+        assert rev.id == "existing-id"
+        db.rollback.assert_awaited_once()
 
 
 class TestFindingRepo:

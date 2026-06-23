@@ -81,6 +81,13 @@ class AppSettings(BaseSettings):
         default=5,
         description="触发详细报告的 critical/warning Finding 数量阈值",
     )
+    stale_review_timeout_minutes: int = Field(
+        default=30,
+        description=(
+            "评审超时回收时间（分钟）。"
+            "超过此时间的 PENDING/RUNNING 评审将被自动标记为 FAILED"
+        ),
+    )
 
     # ── Git 平台 ─────────────────────────────────────────
     github_token: str = Field(default="", description="GitHub API Token")

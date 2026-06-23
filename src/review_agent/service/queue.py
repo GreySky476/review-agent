@@ -217,10 +217,11 @@ async def run_review(
                     review_id=review_id,
                 )
 
-        # 更新 ReviewModel 记录（先更新状态 + 分数，独立提交）
+        # 单一事务写入所有 DB 操作
         if review_id:
             try:
                 async with async_session_factory() as db:
+                    # 1. 更新 ReviewModel
                     review_repo = ReviewRepo(db)
                     await review_repo.update(
                         review_id,
@@ -233,27 +234,9 @@ async def run_review(
                         await review_repo.update_reviewed_files(
                             review_id, result.reviewed_files
                         )
-                    await db.commit()
-                    logger.info(
-                        "Review status updated: id=%s status=%s score=%d",
-                        review_id, result.status.value, result.score,
-                    )
-            except Exception:
-                logger.warning(
-                    "Failed to update review status %s: %s",
-                    review_id, traceback.format_exc(),
-                )
-                await log_error(
-                    error_type="db_write_failed",
-                    error_message=f"Failed to persist review status {review_id}",
-                    project_id=project_id,
-                    review_id=review_id,
-                )
 
-            # 独立事务写入 Findings（失败不影响 review 状态）
-            if result.findings:
-                try:
-                    async with async_session_factory() as db:
+                    # 2. 写入 Findings
+                    if result.findings:
                         for finding in result.findings:
                             finding_record = FindingModel(
                                 review_id=review_id,
@@ -268,52 +251,37 @@ async def run_review(
                                 rule_id=finding.rule_id,
                             )
                             db.add(finding_record)
-                        await db.commit()
-                        logger.info(
-                            "Findings saved: review=%s count=%d",
-                            review_id, len(result.findings),
-                        )
-                except Exception:
-                    logger.warning(
-                        "Failed to save findings for review %s: %s",
-                        review_id, traceback.format_exc(),
-                    )
 
-        # 更新 PR last_reviewed_sha
-        if review_id and pr_number:
-            try:
-                async with async_session_factory() as db:
-                    pr_repo = PullRequestRepo(db)
-                    await pr_repo.update_reviewed_sha(
-                        project_id, pr_number, sha, review_id
-                    )
+                    # 3. 更新 PR last_reviewed_sha
+                    if pr_number:
+                        pr_repo = PullRequestRepo(db)
+                        await pr_repo.update_reviewed_sha(
+                            project_id, pr_number, sha, review_id
+                        )
+
+                    # 4. 同步 commit is_reviewed
+                    from review_agent.repo.commit import CommitRepo
+
+                    commit_obj = await CommitRepo(db).get_by_sha(project_id, sha)
+                    if commit_obj:
+                        commit_obj.is_reviewed = True
+
+                    # 一次性提交
                     await db.commit()
                     logger.info(
-                        "Updated PR #%d last_reviewed_sha=%s", pr_number, sha[:8],
+                        "Review %s persisted: status=%s score=%d findings=%d",
+                        review_id, result.status.value, result.score, len(result.findings),
                     )
             except Exception:
                 logger.warning(
-                    "Failed to update PR last_reviewed_sha: %s",
-                    traceback.format_exc(),
+                    "Failed to persist review %s: %s", review_id, traceback.format_exc(),
                 )
-
-        # 同步 commit 状态：标记为已评审
-        try:
-            async with async_session_factory() as db:
-                from review_agent.repo.commit import CommitRepo
-
-                commit_obj = await CommitRepo(db).get_by_sha(project_id, sha)
-                if commit_obj:
-                    commit_obj.is_reviewed = True
-                    await db.commit()
-                    logger.info(
-                        "Commit is_reviewed synced: sha=%s", sha[:8],
-                    )
-        except Exception:
-            logger.warning(
-                "Failed to sync commit is_reviewed for %s: %s",
-                sha[:8], traceback.format_exc(),
-            )
+                await log_error(
+                    error_type="db_write_failed",
+                    error_message=f"Failed to persist review {review_id} (transaction rolled back)",
+                    project_id=project_id,
+                    review_id=review_id,
+                )
 
         logger.info(
             "PR review #%d completed: %d findings, score=%d",
@@ -491,10 +459,11 @@ async def run_commit_review(
                     review_id=review_id,
                 )
 
-        # 更新 ReviewModel 记录（先更新状态 + 分数，独立提交）
+        # 单一事务写入所有 DB 操作
         if review_id:
             try:
                 async with async_session_factory() as db:
+                    # 1. 更新 ReviewModel
                     review_repo = ReviewRepo(db)
                     await review_repo.update(
                         review_id,
@@ -503,26 +472,9 @@ async def run_commit_review(
                         findings_count=len(result.findings),
                         error_message=result.error_message,
                     )
-                    await db.commit()
-                    logger.info(
-                        "Review status updated: id=%s status=%s score=%d",
-                        review_id, result.status.value, result.score,
-                    )
-            except Exception:
-                logger.warning(
-                    "Failed to update review status %s: %s", review_id, traceback.format_exc()
-                )
-                await log_error(
-                    error_type="db_write_failed",
-                    error_message=f"Failed to persist review status {review_id}",
-                    project_id=project_id,
-                    review_id=review_id,
-                )
 
-            # 独立事务写入 Findings（失败不影响 review 状态）
-            if result.findings:
-                try:
-                    async with async_session_factory() as db:
+                    # 2. 写入 Findings
+                    if result.findings:
                         for finding in result.findings:
                             finding_record = FindingModel(
                                 review_id=review_id,
@@ -537,33 +489,29 @@ async def run_commit_review(
                                 rule_id=finding.rule_id,
                             )
                             db.add(finding_record)
-                        await db.commit()
-                        logger.info(
-                            "Findings saved: review=%s count=%d",
-                            review_id, len(result.findings),
-                        )
-                except Exception:
-                    logger.warning(
-                        "Failed to save findings for review %s: %s",
-                        review_id, traceback.format_exc(),
-                    )
 
-            # 同步 commit 状态：标记为已评审
-            try:
-                async with async_session_factory() as db:
+                    # 3. 同步 commit is_reviewed
                     from review_agent.repo.commit import CommitRepo
 
                     commit_obj = await CommitRepo(db).get_by_sha(project_id, sha)
                     if commit_obj:
                         commit_obj.is_reviewed = True
-                        await db.commit()
-                        logger.info(
-                            "Commit is_reviewed synced: sha=%s", sha[:8],
-                        )
+
+                    # 一次性提交
+                    await db.commit()
+                    logger.info(
+                        "Review %s persisted: status=%s score=%d findings=%d",
+                        review_id, result.status.value, result.score, len(result.findings),
+                    )
             except Exception:
                 logger.warning(
-                    "Failed to sync commit is_reviewed for %s: %s",
-                    sha[:8], traceback.format_exc(),
+                    "Failed to persist review %s: %s", review_id, traceback.format_exc(),
+                )
+                await log_error(
+                    error_type="db_write_failed",
+                    error_message=f"Failed to persist review {review_id} (transaction rolled back)",
+                    project_id=project_id,
+                    review_id=review_id,
                 )
 
         logger.info(
