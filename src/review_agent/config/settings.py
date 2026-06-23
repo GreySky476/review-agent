@@ -63,7 +63,7 @@ class AppSettings(BaseSettings):
     ai_read_timeout: int = Field(default=120, description="AI 请求读取超时（秒，含模型推理时间）")
     ai_max_retries: int = Field(default=1, description="AI 请求最大重试次数")
     ai_review_max_tokens: int = Field(
-        default=8192,
+        default=32768,
         description="AI 评审最大输出 Token（含推理 Token）",
     )
 
@@ -84,7 +84,7 @@ class AppSettings(BaseSettings):
         description="评审跳过的路径模式（逗号分隔，glob 模式），支持 ** 递归匹配",
     )
     ai_batch_max_input_tokens: int = Field(
-        default=15000,
+        default=128000,
         description="单次批量调用的最大预估输入 token，0=禁用批量",
     )
     verbose_report_threshold: int = Field(

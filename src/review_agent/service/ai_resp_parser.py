@@ -176,16 +176,43 @@ def parse_batch_response(
         for f_item in findings_raw:
             if not isinstance(f_item, dict):
                 continue
-            severity_str = f_item.get("severity", "info")
+
+            severity_str = f_item.get("severity", "")
+            if severity_str not in ("critical", "warning"):
+                continue
+            severity = _SEVERITY_MAP[severity_str]
+
+            category_str = f_item.get("category", "")
+            category_map = {
+                "bug": FindingCategory.BUG,
+                "security": FindingCategory.SECURITY,
+                "performance": FindingCategory.PERFORMANCE,
+            }
+            category = category_map.get(category_str)
+            if category is None:
+                continue
+
+            line_start = adjust_batch_line(entry, f_item.get("line"))
+
+            code_snippet = None
+            if line_start is not None:
+                relative_line = line_start - entry.start_line
+                source_lines = entry.source_code.split("\n")
+                if 0 <= relative_line < len(source_lines):
+                    snippet = source_lines[relative_line].strip()
+                    if snippet:
+                        code_snippet = snippet[:80]
+
             result[idx].append(
                 DimensionFinding(
-                    category=FindingCategory.BUG,
-                    severity=_SEVERITY_MAP.get(severity_str, FindingSeverity.INFO),
+                    category=category,
+                    severity=severity,
                     title=f_item.get("title", "未命名问题"),
                     description=f_item.get("description", ""),
                     suggestion=f_item.get("suggestion", ""),
                     file_path=entry.file_path,
-                    line_start=adjust_batch_line(entry, f_item.get("line")),
+                    line_start=line_start,
+                    code_snippet=code_snippet,
                 )
             )
 

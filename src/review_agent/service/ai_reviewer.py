@@ -28,15 +28,15 @@ _AI_REVIEW_BASE_PROMPT = (
     "```json\n"
     "[\n"
     "  {\n"
-    '    "severity": "critical|warning|info",\n'
+    '    "category": "bug|security|performance",\n'
+    '    "severity": "critical|warning",\n'
     '    "title": "简短标题",\n'
-    '    "description": "问题详细描述",\n'
-    '    "suggestion": "修复建议",\n'
-    '    "line": <行号或 null>\n'
+    '    "description": "问题详细描述，包含问题代码片段",\n'
+    '    "suggestion": "具体的修改建议和代码示例",\n'
+    '    "line": <行号>\n'
     "  }\n"
     "]\n"
     "```\n"
-    "如果没有发现问题，返回空数组 []。"
 )
 
 _SEVERITY_MAP = {
@@ -100,7 +100,8 @@ class AIReviewer:
 
         system_parts.append(
             "你是一位资深代码评审专家。请严格参照上述规范审查下方的代码变更，"
-            "找出其中的违规项、正确性缺陷、安全风险、错误处理遗漏和逻辑错误。"
+            "找出其中的正确性缺陷(Bug)、安全风险(Security)和性能问题(Performance)。"
+            "对每个问题必须给出具体的修复建议和代码示例。"
         )
         system_parts.append(_AI_REVIEW_BASE_PROMPT)
         system_prompt = "\n\n".join(system_parts)
@@ -186,11 +187,12 @@ class AIReviewer:
             '    "function_index": 0,\n'
             '    "findings": [\n'
             "      {\n"
-            '        "severity": "critical|warning|info",\n'
+            '        "category": "bug|security|performance",\n'
+            '        "severity": "critical|warning",\n'
             '        "title": "简短标题",\n'
-            '        "description": "问题详细描述",\n'
-            '        "suggestion": "修复建议",\n'
-            '        "line": <行号或 null>\n'
+            '        "description": "问题详细描述，包含问题代码片段",\n'
+            '        "suggestion": "具体的修改建议和代码示例",\n'
+            '        "line": <行号>\n'
             "      }\n"
             "    ]\n"
             "  },\n"
@@ -201,7 +203,9 @@ class AIReviewer:
             "对没有发现问题的函数，返回 function_index 和空 findings 数组。"
         )
         system_parts: list[str] = [
-            "你是一位资深代码评审专家，请对下方多个代码块逐一进行评审。",
+            "你是一位资深代码评审专家，请对下方多个代码块逐一进行评审。"
+            "只关注 Bug、安全缺陷和性能问题三类，忽略代码风格。"
+            "对每个问题必须给出具体的修复建议和代码示例。",
             _batch_response_format,
         ]
 
@@ -369,16 +373,43 @@ class AIReviewer:
         for item in raw_findings:
             if not isinstance(item, dict):
                 continue
-            severity_str = item.get("severity", "info")
+
+            severity_str = item.get("severity", "")
+            if severity_str not in ("critical", "warning"):
+                continue
+            severity = _SEVERITY_MAP[severity_str]
+
+            category_str = item.get("category", "")
+            category_map = {
+                "bug": FindingCategory.BUG,
+                "security": FindingCategory.SECURITY,
+                "performance": FindingCategory.PERFORMANCE,
+            }
+            category = category_map.get(category_str)
+            if category is None:
+                continue
+
+            line_start = adjust_line_number(chunk, item.get("line"))
+
+            code_snippet = None
+            if line_start is not None:
+                relative_line = line_start - chunk.start_line
+                source_lines = chunk.source_code.split("\n")
+                if 0 <= relative_line < len(source_lines):
+                    snippet = source_lines[relative_line].strip()
+                    if snippet:
+                        code_snippet = snippet[:80]
+
             findings.append(
                 DimensionFinding(
-                    category=FindingCategory.BUG,
-                    severity=_SEVERITY_MAP.get(severity_str, FindingSeverity.INFO),
+                    category=category,
+                    severity=severity,
                     title=item.get("title", "未命名问题"),
                     description=item.get("description", ""),
                     suggestion=item.get("suggestion", ""),
                     file_path=chunk.file_path,
-                    line_start=adjust_line_number(chunk, item.get("line")),
+                    line_start=line_start,
+                    code_snippet=code_snippet,
                 )
             )
 

@@ -225,6 +225,74 @@ class TestAggregate:
         assert result["score"] == 100
         assert result["deduped_findings"] == []
 
+    async def test_info_level_filtered_out(self, base_state: ReviewState) -> None:
+        base_state["rule_findings"] = [
+            DimensionFinding(
+                category=FindingCategory.BUG,
+                severity=FindingSeverity.INFO,
+                title="info bug",
+                description="d",
+                suggestion="s",
+                file_path="f",
+            ),
+            DimensionFinding(
+                category=FindingCategory.BUG,
+                severity=FindingSeverity.CRITICAL,
+                title="critical bug",
+                description="d",
+                suggestion="s",
+                file_path="f2",
+            ),
+        ]
+        result = await aggregate_findings(base_state)
+        # Info finding filtered out, only critical remains
+        assert len(result["deduped_findings"]) == 1
+        assert result["deduped_findings"][0].title == "critical bug"
+
+    async def test_style_category_filtered_out(self, base_state: ReviewState) -> None:
+        base_state["rule_findings"] = [
+            DimensionFinding(
+                category=FindingCategory.STYLE,
+                severity=FindingSeverity.WARNING,
+                title="style issue",
+                description="d",
+                suggestion="s",
+                file_path="f",
+            ),
+        ]
+        result = await aggregate_findings(base_state)
+        assert len(result["deduped_findings"]) == 0
+
+    async def test_allowed_categories_pass_through(self, base_state: ReviewState) -> None:
+        base_state["rule_findings"] = [
+            DimensionFinding(
+                category=FindingCategory.BUG,
+                severity=FindingSeverity.WARNING,
+                title="bug",
+                description="d",
+                suggestion="s",
+                file_path="f1",
+            ),
+            DimensionFinding(
+                category=FindingCategory.SECURITY,
+                severity=FindingSeverity.CRITICAL,
+                title="security",
+                description="d",
+                suggestion="s",
+                file_path="f2",
+            ),
+            DimensionFinding(
+                category=FindingCategory.PERFORMANCE,
+                severity=FindingSeverity.WARNING,
+                title="perf",
+                description="d",
+                suggestion="s",
+                file_path="f3",
+            ),
+        ]
+        result = await aggregate_findings(base_state)
+        assert len(result["deduped_findings"]) == 3
+
 
 class TestGenerateSummary:
     async def test_empty_state(self, base_state: ReviewState) -> None:
@@ -337,7 +405,7 @@ class TestAiBatchWithProvider:
 
         response_json = (
             '[{"function_index": 0, "findings": ['
-            '  {"severity": "warning", "title": "test issue", '
+            '  {"category": "bug", "severity": "warning", "title": "test issue", '
             '   "description": "a problem", "suggestion": "fix it", "line": 2}'
             "]}]"
         )
@@ -367,11 +435,11 @@ class TestAiBatchWithProvider:
 
         response_json = (
             '[{"function_index": 0, "findings": ['
-            '  {"severity": "info", "title": "issue a", '
+            '  {"category": "bug", "severity": "warning", "title": "issue a", '
             '   "description": "desc a", "suggestion": "fix a", "line": 1}'
             "]},"
             '{"function_index": 1, "findings": ['
-            '  {"severity": "warning", "title": "issue b", '
+            '  {"category": "security", "severity": "warning", "title": "issue b", '
             '   "description": "desc b", "suggestion": "fix b", "line": 2}'
             "]}]"
         )

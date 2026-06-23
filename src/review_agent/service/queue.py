@@ -351,7 +351,7 @@ async def run_review(
             "score": result.score,
             "review_id": review_id,
         }
-    except Exception:
+    except BaseException:
         error_msg = traceback.format_exc()
         logger.error("PR review #%d failed: %s", pr_number, error_msg)
         await log_error(
@@ -366,7 +366,7 @@ async def run_review(
                     review_repo = ReviewRepo(db)
                     await review_repo.update(review_id, status=_status_failed)
                     await db.commit()
-            except Exception:
+            except BaseException:
                 logger.warning(
                     "Failed to mark review %s as failed: %s",
                     review_id,
@@ -613,7 +613,7 @@ async def run_commit_review(
             "score": result.score,
             "review_id": review_id,
         }
-    except Exception:
+    except BaseException:
         error_msg = traceback.format_exc()
         logger.error("Commit review failed for %s@%s: %s", repo_name, sha, error_msg)
         await log_error(
@@ -630,7 +630,7 @@ async def run_commit_review(
                     await review_repo.update(review_id, status=_status_failed)
                     await db.commit()
                     logger.info("ReviewModel %s marked as failed", review_id)
-            except Exception:
+            except BaseException:
                 logger.warning(
                     "Failed to mark review %s as failed: %s", review_id, traceback.format_exc()
                 )

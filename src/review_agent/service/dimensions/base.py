@@ -23,6 +23,7 @@ class DimensionFinding:
     line_start: int | None = None
     line_end: int | None = None
     rule_id: str | None = None
+    code_snippet: str | None = None
 
 
 async def review_security(chunk: CodeChunk) -> list[DimensionFinding]:
