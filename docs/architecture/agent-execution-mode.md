@@ -94,17 +94,16 @@ status: passed|failed|partial
 changed_files:
   - {path}: {一句话摘要（≤1行）}
   - {path}: {一句话摘要}
-test_results:
-  ruff: {N errors / passed}
-  mypy: {N errors / pre-existing: N}
-  pytest: {N passed / N failed}
-new_test_count: {N}
+verification:
+  ruff: {N errors / passed}（仅扫描改动的文件：`ruff check <file1> <file2>`）
 changes_summary: |
   {3-5 行说明}
 next_steps: {建议 / none}
 ---SUBAGENT_DETAIL---
 {失败原因 / 关键决策说明，≤10 行}
 ```
+
+> **注意**：子 Agent 不做 `mypy` 和 `pytest`。全量验证由主 Agent 在集成阶段执行一次。详见 §8 验证策略。
 
 ### 3.2 主 Agent 调用方式
 
@@ -203,11 +202,44 @@ lint  测试      其他（依赖缺失）
 
 ---
 
-## 八、集成验证
+	## 八、验证策略（优化版）
 
-1. **子 Agent 自验证**：在自己的会话内运行 `ruff check .` 和 `mypy src/`
-2. **主 Agent 终验**：所有子任务完成后，主会话运行 `ruff check . && mypy src/ && pytest`
-3. **`pytest` 只在最终阶段由主 Agent 运行**（子 Agent 环境可能缺少 test DB）
+	### 8.1 原则
+
+	验证分两层，各有明确边界，避免不必要的全量扫描：
+
+	| 层级 | 执行者 | 范围 | 命令 |
+	|------|--------|------|------|
+	| **文件级验证** | 子 Agent | 仅本次修改的文件 | `ruff check <file1> <file2>` |
+	| **集成验证** | 主 Agent | 全项目 | `ruff check . && pytest` |
+
+	### 8.2 文件级验证（子 Agent 执行）
+
+	子 Agent 修改完代码后，只验证自己改的文件：
+
+	1. `ruff check <file1> <file2>` — 检查修改文件的 lint（不跑全项目）
+	2. `python -c "import ast; ast.parse(open('file.py').read())"` — 快速语法检查（可选）
+	3. **不做** `mypy src/`（全项目扫描慢，预存错误阻碍后续检查）
+	4. **不做** `pytest`（全量测试由主 Agent 在最终阶段执行）
+
+	### 8.3 集成验证（主 Agent 执行）
+
+	所有子任务完成后，主会话执行一次：
+
+	1. `ruff check .` — 全项目 lint
+	2. `pytest` — 全量测试
+
+	`mypy src/` 仅在项目基础兼容时执行（当前因 `base.py` 的 Python 3.12 语法被预存阻塞）。
+
+	### 8.4 节约估算
+
+	对比优化前后，一次 3 子任务的 Phase 的 token 消耗：
+
+	| 环节 | 优化前 | 优化后 | 节约 |
+	|------|--------|--------|------|
+	| 子 Agent × 3 | `ruff check .` + `mypy` + `pytest`（每个~20000 tokens输出） | `ruff check <file>`（~500 tokens） | ~58k |
+	| 主 Agent 终验 | — | `ruff check .` + `pytest`（一次） | — |
+	| **合计** | ~60k (子 Agent) + 10k (主) | ~1.5k (子Agent) + 10k (主) | **~58k (83%)** |
 
 ---
 
