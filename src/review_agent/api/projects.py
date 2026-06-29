@@ -5,24 +5,43 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from review_agent.api.dependencies.auth import require_role
 from review_agent.config.database import get_session
 from review_agent.config.settings import get_settings
-from review_agent.repo.project import ProjectRepo, normalize_repo_url
-from review_agent.repo.pull_request import PullRequestRepo
-from review_agent.repo.review import ReviewRepo
-from review_agent.repo.webhook_event import WebhookEventRepo
 from review_agent.service.git.github_provider import GitHubProvider
+from review_agent.service.project_handler import (
+    count_prs as _count_prs,
+)
+from review_agent.service.project_handler import (
+    count_reviews as _count_reviews,
+)
+from review_agent.service.project_handler import (
+    create_project as _create_project_handler,
+)
+from review_agent.service.project_handler import (
+    delete_project as _delete_project_handler,
+)
+from review_agent.service.project_handler import (
+    get_active_project,
+    get_last_webhook_event_time,
+    get_latest_review,
+    update_project_settings,
+)
+from review_agent.service.project_handler import (
+    update_project as _update_project_handler,
+)
+from review_agent.types.enums import UserRole
 from review_agent.types.exceptions import ValidationError
 from review_agent.types.models import ProjectCreate, ProjectUpdate
 from review_agent.types.orm import ProjectModel
 
-router = APIRouter(tags=["projects"])
+router = APIRouter(tags=["projects"])  # TODO: 登录页面未就绪，暂时不启用 JWT 认证
 
 
 # UUID 正则：xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
@@ -66,11 +85,9 @@ async def _format_project(
     latest_score: int | None = None
     recent_review_dt: datetime | None = None
     if db is not None:
-        pr_repo = PullRequestRepo(db)
-        review_repo = ReviewRepo(db)
-        pr_count = await pr_repo.count(filters={"project_id": project.id})
-        review_count = await review_repo.count(filters={"project_id": project.id})
-        latest_review = await review_repo.get_latest(project.id)
+        pr_count = await _count_prs(db, project.id)
+        review_count = await _count_reviews(db, project.id)
+        latest_review = await get_latest_review(db, project.id)
         if latest_review:
             latest_score = latest_review.score
             recent_review_dt = latest_review.create_time
@@ -110,18 +127,20 @@ async def _format_project(
     }
 
 
-@router.post("/projects", status_code=201)
+@router.post(
+    "/projects", status_code=201, dependencies=[Depends(require_role(UserRole.PROJECT_ADMIN))]
+)
 async def create_project(
     body: ProjectCreate,
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """注册新项目。"""
     _validate_project_name(body.name)
-    repo = ProjectRepo(db)
-    project = await repo.create(
+    project = await _create_project_handler(
+        db,
         name=body.name,
         platform=body.platform.value,
-        repo_url=normalize_repo_url(body.repo_url),
+        repo_url=body.repo_url,
         webhook_enabled=False,
     )
     return await _format_project(project, webhook_last_event_at=None, db=db)
@@ -136,7 +155,6 @@ async def list_projects(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """获取项目列表。"""
-    webhook_repo = WebhookEventRepo(db)
     stmt = select(ProjectModel).where(ProjectModel.is_deleted.is_(False))
     if platform:
         stmt = stmt.where(ProjectModel.platform == platform)
@@ -159,7 +177,7 @@ async def list_projects(
 
     items_out: list[dict[str, Any]] = []
     for p in items:
-        last_event = await webhook_repo.last_event_time(p.id)
+        last_event = await get_last_webhook_event_time(db, p.id)
         items_out.append(await _format_project(p, last_event, db))
 
     return {"items": items_out, "total": total, "page": page, "page_size": page_size}
@@ -171,9 +189,7 @@ async def get_project(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """获取项目详情。"""
-    repo = ProjectRepo(db)
-    webhook_repo = WebhookEventRepo(db)
-    project = await repo.get_active(project_id)
+    project = await get_active_project(db, project_id)
 
     if project is None:
         return {
@@ -193,7 +209,7 @@ async def get_project(
             "webhook_events": [],
         }
 
-    last_event = await webhook_repo.last_event_time(project_id)
+    last_event = await get_last_webhook_event_time(db, project_id)
     result = await _format_project(project, last_event, db)
     result["webhook_events"] = []
     return result
@@ -206,29 +222,28 @@ async def update_project(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """更新项目配置。"""
-    repo = ProjectRepo(db)
     if body.name is not None:
         _validate_project_name(body.name)
-        await repo.update(project_id, name=body.name)
+        await _update_project_handler(db, project_id, name=body.name)
     if body.review_branches is not None:
-        await repo.update_settings(project_id, review_branches=body.review_branches)
+        await update_project_settings(db, project_id, review_branches=body.review_branches)
     # 返回完整项目信息，前端可立即使用
-    project = await repo.get_active(project_id)
+    project = await get_active_project(db, project_id)
     if project:
-        webhook_repo = WebhookEventRepo(db)
-        last_event = await webhook_repo.last_event_time(project_id)
+        last_event = await get_last_webhook_event_time(db, project_id)
         return await _format_project(project, last_event, db)
     return {"id": project_id, "updated": True}
 
 
-@router.delete("/projects/{project_id}")
+@router.delete(
+    "/projects/{project_id}", dependencies=[Depends(require_role(UserRole.PROJECT_ADMIN))]
+)
 async def delete_project(
     project_id: str,
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """删除项目（软删除）。"""
-    repo = ProjectRepo(db)
-    await repo.soft_delete(project_id)
+    await _delete_project_handler(db, project_id)
     return {"id": project_id, "deleted": True}
 
 
@@ -246,8 +261,7 @@ async def test_webhook_connection(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """测试项目 Webhook 连接状态（主动向 GitHub 查询并发送 Ping）。"""
-    repo = ProjectRepo(db)
-    project = await repo.get_active(project_id)
+    project = await get_active_project(db, project_id)
     if not project:
         return {"found": False, "error": "project_not_found"}
 
@@ -272,4 +286,4 @@ async def test_webhook_connection(
             await db.flush()
         result["status"] = "disconnected"
 
-    return result
+    return cast(dict[str, Any], result)

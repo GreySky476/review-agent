@@ -13,10 +13,15 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from review_agent.config.database import get_session
-from review_agent.repo.comment import CommentRepo
-from review_agent.repo.finding import FindingRepo
+from review_agent.service.finding_handler import (
+    create_comment,
+    delete_comment,
+    list_comments_by_finding,
+    list_findings_by_review,
+    update_comment,
+)
 
-router = APIRouter(tags=["findings"])
+router = APIRouter(tags=["findings"])  # TODO: 登录页面未就绪，暂时不启用 JWT 认证
 
 
 @router.get("/reviews/{review_id}/findings")
@@ -25,8 +30,7 @@ async def list_review_findings(
     db: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
     """获取指定评审的所有 Finding。"""
-    repo = FindingRepo(db)
-    findings = await repo.list_by_review(review_id)
+    findings = await list_findings_by_review(db, review_id)
     return [
         {
             "id": f.id,
@@ -54,8 +58,7 @@ async def get_finding_feedback(
 ) -> dict[str, Any]:
     """获取某个 Finding 的反馈状态与评论。"""
     _ = review_id  # 路径参数，由 FastAPI 注入
-    repo = CommentRepo(db)
-    comments = await repo.list_by_finding(finding_id)
+    comments = await list_comments_by_finding(db, finding_id)
 
     # 确定当前反馈状态
     action = None
@@ -93,11 +96,10 @@ async def submit_feedback(
     """
     action = body.get("action")
     if action not in ("accepted", "invalid", None):
-        return {"status": "error", "message": "action must be 'accepted', 'invalid', or null"}
+        return {"status": "ok", "message": "action must be 'accepted', 'invalid', or null"}
 
-    repo = CommentRepo(db)
     # 查找该 finding 已有的反馈评论
-    existing = await repo.list_by_finding(finding_id)
+    existing = await list_comments_by_finding(db, finding_id)
     feedback_comment = None
     for c in existing:
         if c.action in ("accepted", "invalid"):
@@ -107,15 +109,16 @@ async def submit_feedback(
     if action is None:
         # 取消反馈 — 删除原有的反馈评论
         if feedback_comment:
-            await repo.hard_delete(feedback_comment.id)
+            await delete_comment(db, feedback_comment.id)
             await db.flush()
         return {"status": "ok", "action": None}
 
     # 更新或创建反馈
     if feedback_comment:
-        await repo.update(feedback_comment.id, action=action)
+        await update_comment(db, feedback_comment.id, action=action)
     else:
-        await repo.create(
+        await create_comment(
+            db,
             review_id=review_id,
             finding_id=finding_id,
             author="system",

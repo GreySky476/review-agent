@@ -13,6 +13,16 @@
 2. **测试先行**：编码前先想清楚如何验证
 3. **渐进交付**：大任务拆小，逐个完成并验证
 
+## 九、Bug 修复准则
+
+**修复任何 Bug 或缺陷前，必须遵循以下分析流程：**
+
+1. **业务角度切入**：先理解这个功能在业务上应该如何运作，正确的流程是什么，而不是直接看代码报错在哪
+2. **正反例子推演**：既要考虑"正常流程"（happy path），也要考虑"异常流程"（sad path），例如重复点击、并发请求、部分失败等场景
+3. **流程完整性检查**：顺着业务链路从头到尾走一遍，确认每个环节的正确性，不要只修当前报错的那一行
+4. **跳出局部范围**：当前报错只是症状，根因可能在上下游的另一个模块。修改前必须确认改动不会破坏其他业务流程
+5. **多角度验证**：分析时考虑——这个修正在什么场景下有效？什么场景下会失效？是否有竞态条件？
+
 ## 一、硬性约束（CI 强制验证）
 
 以下规则由 CI/Linter 直接强制执行，没有例外：
@@ -164,3 +174,23 @@
 | 日期 | 变更内容 | 变更人 |
 |------|----------|--------|
 | 2026-06-09 | GitHub Push Webhook 自动评审：CommitReviewService + 文件级并发 + 文档更新 | GreySky476 |
+| 2026-06-30 | UI 筛选框设计规范：使用 wrapper div + 绝对定位 ▼ 实现 select 样式；两级筛选用单 dropdown 动态切换选项而非联动双 dropdown | GreySky476 |
+
+## 十、UI 样式规范
+
+### Select 下拉框
+
+禁止使用 `bg-[url(svg)]` 方式自定义箭头，改用 wrapper div + 绝对定位字符：
+
+```tsx
+<div className="relative">
+  <select className="appearance-none rounded-md border border-border bg-surface px-3 py-1.5 pr-7 text-sm cursor-pointer">
+    ...
+  </select>
+  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted pointer-events-none">▼</span>
+</div>
+```
+
+### 级联筛选
+
+两级联动（如平台 → 项目）使用**单 dropdown 动态切换选项**模式：未选时展示一级选项，选定后切换为二级选项 + `← 返回` 选项，禁止使用双 dropdown + disable 模式。

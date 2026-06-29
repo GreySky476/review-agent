@@ -11,17 +11,29 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from review_agent.api.dependencies.auth import require_role
 from review_agent.config.database import get_session
-from review_agent.repo.commit import CommitRepo
-from review_agent.repo.project import ProjectRepo
-from review_agent.repo.review import ReviewRepo
+from review_agent.service.commit_handler import (
+    count_commits as _count_commits,
+)
+from review_agent.service.commit_handler import (
+    create_review as _create_review,
+)
+from review_agent.service.commit_handler import (
+    get_commit_by_sha,
+    get_project,
+    get_review_by_head_sha,
+)
+from review_agent.service.commit_handler import (
+    list_commits as _list_commits_query,
+)
 from review_agent.service.git.github_provider import GitHubProvider
 from review_agent.service.queue import enqueue_commit_review
-from review_agent.types.enums import ReviewStatus
+from review_agent.types.enums import ReviewStatus, UserRole
 from review_agent.types.orm import ReviewModel
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["commits"])
+router = APIRouter(tags=["commits"])  # TODO: 登录页面未就绪，暂时不启用 JWT 认证
 
 
 @router.get("/projects/{project_id}/commits")
@@ -34,9 +46,8 @@ async def list_commits(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """获取项目的提交列表。"""
-    repo = CommitRepo(db)
-
-    items = await repo.list_by_project(
+    items = await _list_commits_query(
+        db,
         project_id,
         branch=branch,
         author=author,
@@ -45,12 +56,12 @@ async def list_commits(
     )
 
     # Count total
-    count_filters: dict[str, Any] = {"project_id": project_id}
-    if branch:
-        count_filters["branch"] = branch
-    if author:
-        count_filters["author"] = author
-    total = await repo.count(filters=count_filters)
+    total = await _count_commits(
+        db,
+        project_id,
+        branch=branch,
+        author=author,
+    )
 
     # 查询每个 commit 的最新 review（含 score 和 reviewed_files）
     sha_list = [c.sha for c in items if c.sha]
@@ -111,7 +122,12 @@ async def list_commits(
     }
 
 
-@router.post("/projects/{project_id}/commits/{sha}/review", status_code=202, response_model=None)
+@router.post(
+    "/projects/{project_id}/commits/{sha}/review",
+    status_code=202,
+    response_model=None,
+    dependencies=[Depends(require_role(UserRole.PROJECT_ADMIN))],
+)
 async def trigger_commit_review(
     project_id: str,
     sha: str,
@@ -128,8 +144,7 @@ async def trigger_commit_review(
     logger.info("Commit review triggered: project=%s sha=%s force=%s", project_id, sha, force)
 
     # 1. 查找项目
-    project_repo = ProjectRepo(db)
-    project = await project_repo.get(project_id)
+    project = await get_project(db, project_id)
     if not project:
         logger.warning("Project not found: %s", project_id)
         return {"status": "rejected", "reason": "project_not_found"}
@@ -139,29 +154,15 @@ async def trigger_commit_review(
         logger.warning("Cannot extract repo_name from repo_url: %s", project.repo_url)
         return {"status": "rejected", "reason": "invalid_repo_url"}
 
-    # 2. SHA 去重检查
+    # 2. 并发保护：同一 SHA 有进行中的评审则拒绝
     try:
-        review_repo_instance = ReviewRepo(db)
-        existing = await review_repo_instance.get_by_head_sha(sha)
-        if existing:
-            if existing.status in (ReviewStatus.COMPLETED, ReviewStatus.COMPLETED_WITH_ERRORS):
-                if not force:
-                    logger.info("SHA %s already completed, skipping", sha[:8])
-                    return {"status": "skipped", "reason": "sha_unchanged"}
-            elif existing.status in (ReviewStatus.PENDING, ReviewStatus.RUNNING):
-                if not force:
-                    logger.info("SHA %s review in progress, rejecting", sha[:8])
-                    return JSONResponse(
-                        {
-                            "status": "rejected",
-                            "reason": "review_in_progress",
-                            "review_id": existing.id,
-                        },
-                        status_code=409,
-                    )
-                # force=true: 软删除旧 review 再创建新评审
-                logger.info("Force re-review: soft-deleting old review %s", existing.id[:8])
-                await review_repo_instance.soft_delete(existing.id)
+        running = await get_review_by_head_sha(db, project.id, sha)
+        if running and running.status in (ReviewStatus.PENDING, ReviewStatus.RUNNING):
+            logger.info("SHA %s review in progress, rejecting", sha[:8])
+            return JSONResponse(
+                {"status": "rejected", "reason": "review_in_progress", "review_id": running.id},
+                status_code=409,
+            )
     except Exception:
         logger.debug("SHA dedup check failed: %s", exc_info=True)
 
@@ -194,13 +195,14 @@ async def trigger_commit_review(
         }
 
     # 4. 获取 commit message 作为评审标题
-    commit_obj = await CommitRepo(db).get_by_sha(project_id, sha)
+    commit_obj = await get_commit_by_sha(db, project_id, sha)
     commit_message = (
         commit_obj.message[:80] if commit_obj and commit_obj.message else f"Commit {sha[:8]}"
     )
 
     # 5. 创建评审记录
-    review = await ReviewRepo(db).create(
+    review = await _create_review(
+        db,
         project_id=project_id,
         pr_number=None,
         pr_title=commit_message,

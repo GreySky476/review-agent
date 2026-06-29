@@ -1,12 +1,17 @@
-"""Webhook 事件处理辅助函数。"""
+"""Webhook 事件处理业务逻辑。
+
+本模块封装 webhook 事件的核心处理逻辑，包括：
+- 项目查找与 webhook 连接标记
+- Push 事件处理与 commit 评审入队
+- PR 事件处理与增量评审入队
+- Webhook 事件解析辅助函数
+"""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import fnmatch
-import hashlib
-import hmac
 import logging
 import traceback
 from datetime import datetime
@@ -23,7 +28,7 @@ from review_agent.repo.webhook_event import WebhookEventRepo
 from review_agent.service.error_logger import log_error
 from review_agent.service.git.github_provider import GitHubProvider
 from review_agent.service.queue import enqueue_commit_review, enqueue_pr_review
-from review_agent.types.enums import EventAction, Platform, ReviewStatus
+from review_agent.types.enums import EventAction, Platform, PRState, ReviewStatus
 from review_agent.types.orm import ProjectModel
 
 logger = logging.getLogger(__name__)
@@ -33,6 +38,44 @@ _PLATFORM_DOMAINS: dict[Platform, str] = {
     Platform.GITLAB: "gitlab.com",
     Platform.GITEE: "gitee.com",
 }
+
+
+async def get_project_by_platform_repo(
+    db: AsyncSession,
+    platform: Platform,
+    repo_full_name: str,
+) -> ProjectModel | None:
+    """Find project by platform and repo full name.
+
+    Args:
+        db: Database session.
+        platform: Git platform type.
+        repo_full_name: Repository full name (e.g. "owner/repo").
+
+    Returns:
+        ProjectModel if found, None otherwise.
+    """
+    domain = _PLATFORM_DOMAINS.get(platform, "")
+    repo_url = f"https://{domain}/{repo_full_name}"
+    project_repo = ProjectRepo(db)
+    return await project_repo.get_by_platform_repo(platform, repo_url)
+
+
+async def get_review_branches_for_project(
+    db: AsyncSession,
+    project_id: str,
+) -> list[str]:
+    """Get review branches for a project.
+
+    Args:
+        db: Database session.
+        project_id: Project ID.
+
+    Returns:
+        List of branch patterns (e.g. ["main", "release/*"]).
+    """
+    project_repo = ProjectRepo(db)
+    return await project_repo.get_review_branches(project_id)  # type: ignore[no-any-return]
 
 
 async def ensure_project_connected(
@@ -75,7 +118,7 @@ async def ensure_project_connected(
 
     if await event_repo.exists_in_window(event_id, get_settings().webhook_dedup_window):
         logger.debug("Duplicate webhook event %s, skipping", event_id[:8])
-        return project.id
+        return project.id  # type: ignore[no-any-return]
 
     await event_repo.create_from_payload(
         project_id=project.id,
@@ -100,15 +143,26 @@ async def handle_push_event(
     db: AsyncSession,
     payload: dict[str, Any],
     event_id: str,
+    platform: Platform = Platform.GITHUB,
 ) -> dict[str, str]:
-    """处理 GitHub push 事件。"""
-    repo_full_name = extract_repo_full_name(Platform.GITHUB, payload)
+    """处理 Git 平台 push 事件。
+
+    Args:
+        db: 数据库会话。
+        payload: 事件体 JSON。
+        event_id: 事件唯一 ID。
+        platform: Git 托管平台类型（默认 GitHub）。
+
+    Returns:
+        处理结果字典。
+    """
+    repo_full_name = extract_repo_full_name(platform, payload)
     if not repo_full_name:
         return {"status": "ignored", "reason": "no_repo"}
     project_repo = ProjectRepo(db)
-    domain = _PLATFORM_DOMAINS.get(Platform.GITHUB, "")
+    domain = _PLATFORM_DOMAINS.get(platform, "")
     repo_url = f"https://{domain}/{repo_full_name}"
-    project = await project_repo.get_by_platform_repo(Platform.GITHUB, repo_url)
+    project = await project_repo.get_by_platform_repo(platform, repo_url)
     if not project:
         logger.warning("No project found for repo: %s", repo_url)
         return {"status": "ignored", "reason": "no_project"}
@@ -232,8 +286,19 @@ async def trigger_pr_review(
     repo_full_name: str,
     pr_head_sha: str | None,
     pr_number: int,
+    platform: Platform = Platform.GITHUB,
+    extra_files: list[dict[str, Any]] | None = None,
 ) -> None:
-    """为 PR 事件触发评审（含增量上下文）。"""
+    """为 PR 事件触发评审（含增量上下文）。
+
+    Args:
+        db: 数据库会话。
+        project_id: 关联项目 ID。
+        repo_full_name: 仓库全名（owner/repo）。
+        pr_head_sha: PR head commit SHA。
+        pr_number: PR 编号。
+        platform: Git 托管平台类型（默认 GitHub）。非 GitHub 平台暂不获取 diff。
+    """
     if not pr_head_sha:
         logger.warning("trigger_pr_review: no head SHA for PR #%d", pr_number)
         return
@@ -248,37 +313,52 @@ async def trigger_pr_review(
     except Exception:
         logger.debug("trigger_pr_review: failed to load PR title", exc_info=True)
 
-    try:
-        git = GitHubProvider()
-        pr_files = await git.get_pr_diff(repo_full_name, pr_number)
-        all_files = [
-            {
-                "filename": f.filename,
-                "status": f.status,
-                "additions": f.additions,
-                "deletions": f.deletions,
-                "patch": f.patch,
-            }
-            for f in pr_files
-        ]
+    if platform == Platform.GITHUB:
+        try:
+            git = GitHubProvider()
+            pr_files = await git.get_pr_diff(repo_full_name, pr_number)
+            all_files = [
+                {
+                    "filename": f.filename,
+                    "status": f.status,
+                    "additions": f.additions,
+                    "deletions": f.deletions,
+                    "patch": f.patch,
+                }
+                for f in pr_files
+            ]
+            logger.info(
+                "trigger_pr_review: PR #%d diff fetched: %d files sha=%s",
+                pr_number,
+                len(all_files),
+                pr_head_sha[:8],
+            )
+        except Exception as exc:
+            logger.warning("trigger_pr_review: failed to fetch diff for PR #%d: %s", pr_number, exc)
+            await log_error(
+                error_type="git_api_failed",
+                error_message=f"trigger_pr_review: failed to fetch PR #{pr_number} diff: {exc}",
+            )
+    elif extra_files:
+        all_files = extra_files
         logger.info(
-            "trigger_pr_review: PR #%d diff fetched: %d files sha=%s",
+            "trigger_pr_review: platform=%s PR #%d — using webhook payload files (%d files)",
+            platform.value,
             pr_number,
             len(all_files),
-            pr_head_sha[:8],
         )
-    except Exception as exc:
-        logger.warning("trigger_pr_review: failed to fetch diff for PR #%d: %s", pr_number, exc)
-        await log_error(
-            error_type="git_api_failed",
-            error_message=f"trigger_pr_review: failed to fetch PR #{pr_number} diff: {exc}",
+    else:
+        logger.info(
+            "trigger_pr_review: platform=%s PR #%d — no file info, attempting without file context",
+            platform.value,
+            pr_number,
         )
 
     # 查询上次评审记录，构建增量上下文
     previous_review_id: str | None = None
     last_reviewed_sha: str | None = None
     previous_file_paths: list[str] = []
-    previous_reviewed_files: list[dict] = []
+    previous_reviewed_files: list[dict[str, Any]] = []
     try:
         prev_review = await ReviewRepo(db).get_latest_completed_by_pr(project_id, pr_number)
         if prev_review:
@@ -304,7 +384,7 @@ async def trigger_pr_review(
     except Exception:
         logger.debug("trigger_pr_review: failed to load previous review context", exc_info=True)
 
-    # 原子创建评审记录（利用数据库唯一约束防止重复）
+    # 创建评审记录（有进行中的评审时返回已存在的记录）
     review_repo = ReviewRepo(db)
     review_status = ReviewStatus.PENDING if all_files else ReviewStatus.FAILED
     review, is_new = await review_repo.create_or_get(
@@ -315,19 +395,33 @@ async def trigger_pr_review(
         status=review_status,
         task_id=None,
     )
+
     if not is_new:
+        if review.status not in (ReviewStatus.PENDING, ReviewStatus.RUNNING):
+            logger.info(
+                "SHA %s for PR #%d already has review %s (status=%s), skipping",
+                pr_head_sha[:8],
+                pr_number,
+                review.id[:8],
+                review.status,
+            )
+            return
         logger.info(
-            "SHA %s for PR #%d already has review %s, skipping",
+            "SHA %s for PR #%d has stuck review %s (status=%s), retrying",
             pr_head_sha[:8],
             pr_number,
             review.id[:8],
+            review.status,
         )
-        return
+        # 重新入队（复用已有 review_id，新结果会覆盖 findings）
+        await db.refresh(review)
+
     logger.info(
-        "trigger_pr_review: review created: id=%s status=%s pr_title='%s'",
+        "trigger_pr_review: review id=%s status=%s pr_title='%s' (is_new=%s)",
         review.id,
-        review_status.value,
+        review.status if not is_new else review_status.value,
         pr_title,
+        is_new,
     )
 
     # 没有文件 → 标记失败后直接返回
@@ -395,7 +489,7 @@ async def sync_pull_request(
     if not pr_number:
         return
     repo = PullRequestRepo(db)
-    state = "merged" if pr_data.get("merged") else pr_data.get("state", "open")
+    state = PRState.MERGED if pr_data.get("merged") else PRState(pr_data.get("state", "open"))
     merged_at_str = pr_data.get("merged_at")
     merged_at: datetime | None = None
     if merged_at_str:
@@ -415,16 +509,6 @@ async def sync_pull_request(
         platform=platform.value,
     )
     logger.info("Synced PR #%d (%s) for project %s", pr_number, state, project_id)
-
-
-def verify_github_signature(payload: bytes, signature: str, secret: str) -> bool:
-    """验证 GitHub Webhook 签名。"""
-    expected = hmac.new(
-        secret.encode("utf-8"),
-        msg=payload,
-        digestmod=hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(f"sha256={expected}", signature)
 
 
 def parse_event_action(platform: Platform, body: dict[str, Any]) -> EventAction | None:

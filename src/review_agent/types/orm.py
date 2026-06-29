@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -103,7 +105,8 @@ class ReviewModel(Base, TimestampMixin, SoftDeleteMixin):
 
     __tablename__ = "reviews"
     __table_args__ = (
-        UniqueConstraint("project_id", "pr_number", "head_sha", name="uq_review_project_pr_sha"),
+        Index("ix_reviews_project_head_sha", "project_id", "head_sha"),
+        Index("ix_reviews_project_pr", "project_id", "pr_number"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -124,7 +127,16 @@ class ReviewModel(Base, TimestampMixin, SoftDeleteMixin):
     commits_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    reviewed_files: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reviewed_files: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    # ── 监控指标（Phase 2：汇总统计） ──
+    summary_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ai_call_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    pipeline_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    file_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # relationships
     project: Mapped[ProjectModel] = relationship("ProjectModel", back_populates="reviews")
@@ -133,6 +145,9 @@ class ReviewModel(Base, TimestampMixin, SoftDeleteMixin):
     )
     review_functions: Mapped[list[ReviewFunctionModel]] = relationship(
         "ReviewFunctionModel", back_populates="review", cascade="all, delete-orphan"
+    )
+    ai_calls: Mapped[list[ReviewAICallModel]] = relationship(
+        "ReviewAICallModel", back_populates="review", cascade="all, delete-orphan"
     )
 
 
@@ -319,6 +334,34 @@ class CommitModel(Base, TimestampMixin):
         nullable=True,
         default=None,
     )
+
+
+# ── ReviewAICall ──────────────────────────────────────────
+
+
+class ReviewAICallModel(Base):
+    """AI 调用明细 — 每次 LLM 请求的 token 消耗和耗时。"""
+
+    __tablename__ = "review_ai_calls"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    review_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("reviews.id"), nullable=False, index=True
+    )
+    batch_idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="success", nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    # relationships
+    review: Mapped[ReviewModel] = relationship("ReviewModel", back_populates="ai_calls")
 
 
 # ── Comment ────────────────────────────────────────────────

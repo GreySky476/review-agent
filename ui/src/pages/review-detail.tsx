@@ -605,19 +605,11 @@ function SingleReviewContent({ reviewId }: { reviewId: string }) {
         </div>
       </div>
 
-      {/* Warning Banner for Partial Failure */}
+      {/* Partial failure hint */}
       {review.status === 'completed_with_errors' && (
-        <div className="rounded-lg border border-warning bg-warning/10 p-4">
-          <div className="flex items-start gap-3">
-            <span className="text-lg shrink-0">⚠️</span>
-            <div>
-              <p className="text-sm font-medium text-foreground">评审不完整</p>
-              <p className="mt-1 text-sm text-muted">
-                {review.error_message || '部分文件无法获取源码，评审结果不完整。'}
-              </p>
-            </div>
-          </div>
-        </div>
+        <p className="text-xs text-warning truncate" title={review.error_message || ''}>
+          ⚠️ {review.error_message?.split('：')[0] || '部分文件无法获取源码'}
+        </p>
       )}
 
       {/* Empty Review (completed, no findings) */}
@@ -722,6 +714,8 @@ function SingleReviewContent({ reviewId }: { reviewId: string }) {
     </div>
   )
 }
+
+/* ── AI Call Detail Table ──────────────────────────────────── */
 
 /* ── Main Export ───────────────────────────────────────────── */
 export function ReviewDetailPage() {

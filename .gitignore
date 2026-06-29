@@ -20,6 +20,9 @@ venv/
 # Claude Code (local overrides, do not share)
 .claude/settings.local.json
 
+# open code
+.opencode
+
 # Environment
 .env
 .env.local

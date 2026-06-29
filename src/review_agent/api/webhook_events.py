@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from review_agent.config.database import get_session
 from review_agent.types.orm import WebhookEventModel
 
-router = APIRouter(tags=["webhook-events"])
+router = APIRouter(tags=["webhook-events"])  # TODO: 登录页面未就绪，暂时不启用 JWT 认证
 
 
 @router.get("/projects/{project_id}/webhook-events")

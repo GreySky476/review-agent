@@ -192,3 +192,32 @@ async def _enqueue_backup(
             # 缓冲已满，丢弃最旧的记录
             _dropped_count += 1
         _backup_buffer.append(entry)
+
+
+async def drain_error_logger() -> None:
+    """应用关闭时排空错误日志缓冲区。
+
+    等待所有后台写入任务完成，然后尝试将内存缓冲写入 DB。
+    如果 DB 不可用，缓冲区数据可能丢失（记录警告）。
+    """
+    if _background_tasks:
+        logger.info("Draining %d pending error log tasks...", len(_background_tasks))
+        await asyncio.gather(*_background_tasks, return_exceptions=True)
+        _background_tasks.clear()
+
+    async with _buffer_lock:
+        if _backup_buffer:
+            logger.info("Flushing %d buffered error log entries to DB...", len(_backup_buffer))
+            try:
+                async with async_session_factory() as db:
+                    repo = ReviewErrorRepo(db)
+                    await _flush_backup_buffer(repo)
+                    await db.commit()
+            except Exception as exc:
+                logger.warning(
+                    "Failed to flush error log buffer on shutdown: %s (%d entries lost)",
+                    exc,
+                    len(_backup_buffer),
+                )
+                _backup_buffer.clear()
+                _dropped_count = 0

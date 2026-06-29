@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -26,15 +27,17 @@ logger = logging.getLogger(__name__)
 
 async def filter_files(state: ReviewState) -> dict[str, Any]:
     """按路径模式过滤文件，产出 target_files。"""
+    t0 = time.monotonic()
     skip_patterns = parse_skip_patterns()
 
     target = [f for f in state["files"] if not should_skip_file(f.filename, skip_patterns)]
 
     logger.info(
-        "filter_files: %d total → %d target (%d skipped by path pattern)",
+        "filter_files: %d total → %d target (%d skipped) elapsed=%.1fs",
         len(state["files"]),
         len(target),
         len(state["files"]) - len(target),
+        time.monotonic() - t0,
     )
     return {"target_files": target}
 
@@ -50,6 +53,7 @@ async def fetch_and_chunk(
 
     跳过已删除的文件，仅评审本次 commit 变更的文件。
     """
+    t0 = time.monotonic()
     repo_name = state["repo_name"]
     sha = state["sha"]
     chunks: list[CodeChunk] = []
@@ -78,10 +82,11 @@ async def fetch_and_chunk(
         chunks.extend(file_chunks)
 
     logger.info(
-        "fetch_and_chunk: %d files → %d chunks, %d unreviewed",
+        "fetch_and_chunk: %d files → %d chunks, %d unreviewed elapsed=%.1fs",
         len(sources),
         len(chunks),
         len(unreviewed),
+        time.monotonic() - t0,
     )
     return {"chunks": chunks, "source_codes": sources, "unreviewed_files": unreviewed}
 
@@ -103,10 +108,13 @@ async def resolve_incremental(state: ReviewState) -> dict[str, Any]:
        → 新函数 → 评审
     7. 模块级变更检测：如果变更行落在所有函数边界之外，强制重评整个文件
     """
+    t0 = time.monotonic()
     chunks = state.get("chunks", [])
     previous_reviewed_functions = state.get("previous_reviewed_functions", [])
     previous_reviewed_files = state.get("previous_reviewed_files", [])
     inter_commit_files = state.get("inter_commit_files") or state.get("files", [])
+    skip_levels = state.get("skip_levels", "")
+    skip_set = {s.strip() for s in skip_levels.split(",") if s.strip()} if skip_levels else set()
 
     if not chunks:
         logger.info("resolve_incremental: no chunks to resolve")
@@ -116,7 +124,7 @@ async def resolve_incremental(state: ReviewState) -> dict[str, Any]:
     changed_lines_map = get_changed_lines_map(inter_commit_files)
 
     # 构建历史函数索引：{(file_path, function_name): [entry, ...]}
-    prev_func_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    prev_func_index: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for entry in previous_reviewed_functions:
         fp = entry.get("file_path", "")
         fn = entry.get("function_name", "")
@@ -188,13 +196,18 @@ async def resolve_incremental(state: ReviewState) -> dict[str, Any]:
     skipped = len(chunks) - len(new_chunks)
     if skipped:
         logger.info(
-            "resolve_incremental: %d/%d chunks new, %d skipped (function-level)",
+            "resolve_incremental: %d/%d chunks new, %d skipped (function-level) elapsed=%.1fs",
             len(new_chunks),
             len(chunks),
             skipped,
+            time.monotonic() - t0,
         )
     else:
-        logger.info("resolve_incremental: all %d chunks are new", len(chunks))
+        logger.info(
+            "resolve_incremental: all %d chunks are new elapsed=%.1fs",
+            len(chunks),
+            time.monotonic() - t0,
+        )
 
     return {"new_chunks": new_chunks}
 
@@ -204,11 +217,11 @@ async def resolve_incremental(state: ReviewState) -> dict[str, Any]:
 
 async def aggregate_findings(state: ReviewState) -> dict[str, Any]:
     """合并所有维度的 findings，去重 + 打分。"""
-    all_findings = (
-        state.get("rule_findings", [])
-        + state.get("ai_findings", [])
-        + state.get("structural_findings", [])
-    )
+    t0 = time.monotonic()
+    rule_findings = state.get("rule_findings", [])
+    ai_findings = state.get("ai_findings", [])
+    structural_findings = state.get("structural_findings", [])
+    all_findings = rule_findings + ai_findings + structural_findings
     publisher = Publisher()
     deduped, score = publisher.aggregate(all_findings)
 
@@ -225,19 +238,19 @@ async def aggregate_findings(state: ReviewState) -> dict[str, Any]:
         penalty = int(fail_ratio * 40)
         score = max(0, score - penalty)
 
-        error_msg = f"{len(unreviewed)}/{reviewed_file_count} 个文件无法获取源码：" + ", ".join(
-            unreviewed[:5]
-        )
-        if len(unreviewed) > 5:
-            error_msg += f" 等 {len(unreviewed)} 个"
-        error_msgs = [error_msg]
+        error_msgs = [f"{len(unreviewed)} 个文件无法获取源码"]
 
     logger.info(
-        "aggregate: %d raw → %d deduped, score=%d, unreviewed=%d",
+        "aggregate: rule=%d ai=%d struct=%d total=%d deduped=%d "
+        "score=%d unreviewed=%d elapsed=%.1fs",
+        len(rule_findings),
+        len(ai_findings),
+        len(structural_findings),
         len(all_findings),
         len(deduped),
         score,
         len(unreviewed),
+        time.monotonic() - t0,
     )
     return {
         "all_findings": all_findings,
@@ -252,10 +265,14 @@ async def aggregate_findings(state: ReviewState) -> dict[str, Any]:
 
 async def generate_summary(state: ReviewState) -> dict[str, Any]:
     """生成 Markdown 格式的评审摘要。"""
+    t0 = time.monotonic()
     deduped = state.get("deduped_findings", [])
     score = state.get("score", 100)
     unreviewed = state.get("unreviewed_files", [])
     error_msgs = state.get("error_messages", [])
+
+    critical_count = sum(1 for f in deduped if f.severity == "critical")
+    warning_count = sum(1 for f in deduped if f.severity == "warning")
 
     publisher = Publisher()
     summary = publisher.generate_summary(
@@ -268,11 +285,15 @@ async def generate_summary(state: ReviewState) -> dict[str, Any]:
     status = ReviewStatus.COMPLETED_WITH_ERRORS if unreviewed else ReviewStatus.COMPLETED
 
     logger.info(
-        "generate_summary: score=%d, findings=%d, status=%s, unreviewed=%d",
+        "generate_summary: score=%d findings=%d critical=%d warning=%d "
+        "status=%s unreviewed=%d elapsed=%.1fs",
         score,
         len(deduped),
+        critical_count,
+        warning_count,
         status.value,
         len(unreviewed),
+        time.monotonic() - t0,
     )
     return {
         "summary_markdown": summary,

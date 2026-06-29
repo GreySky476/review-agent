@@ -7,7 +7,10 @@ from unittest.mock import patch
 import pytest
 from fakeredis import FakeRedis as _SyncFakeRedis
 
-from review_agent.service.webhook_security import RedisRateLimiter
+from review_agent.service.webhook_security import (
+    RedisRateLimiter,
+    verify_platform_token,
+)
 
 
 class _AsyncFakeRedis:
@@ -100,3 +103,35 @@ class TestRedisRateLimiter:
                 assert result is True
         finally:
             webhook_security._limiter = old
+
+
+class TestVerifyPlatformToken:
+    """Tests for verify_platform_token (GitLab/Gitee token verification)."""
+
+    def test_matching_tokens_return_true(self) -> None:
+        """Matching tokens should return True."""
+        assert verify_platform_token("secret123", "secret123") is True
+
+    def test_mismatched_tokens_return_false(self) -> None:
+        """Mismatched tokens should return False."""
+        assert verify_platform_token("secret123", "wrong") is False
+
+    def test_empty_secret_and_token(self) -> None:
+        """Empty secret vs empty token should match."""
+        assert verify_platform_token("", "") is True
+
+    def test_empty_secret_nonempty_token(self) -> None:
+        """Empty secret vs non-empty token should not match."""
+        assert verify_platform_token("", "token") is False
+
+    def test_nonempty_secret_empty_token(self) -> None:
+        """Non-empty secret vs empty token should not match."""
+        assert verify_platform_token("secret", "") is False
+
+    def test_case_sensitive(self) -> None:
+        """Token comparison is case-sensitive."""
+        assert verify_platform_token("MySecret", "mysecret") is False
+
+    def test_whitespace_sensitive(self) -> None:
+        """Token comparison is whitespace-sensitive."""
+        assert verify_platform_token("secret ", "secret") is False

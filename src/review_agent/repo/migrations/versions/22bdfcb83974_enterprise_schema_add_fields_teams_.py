@@ -153,7 +153,7 @@ def downgrade() -> None:
     op.drop_column("webhook_events", "response_time_ms")
     op.drop_column("webhook_events", "response_status")
     op.drop_column("webhook_events", "repo_full_name")
-    op.drop_constraint(None, "users", type_="foreignkey")
+    op.drop_constraint(None, "users", type_="foreignkey")  # type: ignore[arg-type]
     op.drop_column("users", "team_id")
     op.drop_column("users", "last_login_at")
     op.drop_column("users", "avatar_url")
@@ -164,7 +164,7 @@ def downgrade() -> None:
     op.drop_column("reviews", "files_count")
     op.drop_column("reviews", "author")
     op.drop_column("reviews", "trigger_type")
-    op.drop_constraint(None, "projects", type_="foreignkey")
+    op.drop_constraint(None, "projects", type_="foreignkey")  # type: ignore[arg-type]
     op.drop_column("projects", "settings")
     op.drop_column("projects", "last_activity_at")
     op.drop_column("projects", "owner_id")

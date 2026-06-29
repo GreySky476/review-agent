@@ -1,0 +1,114 @@
+# =============================================================================
+# Prometheus Alerting Rules — review-agent
+# =============================================================================
+# All rules use placeholder metric names consistent with OTel auto-
+# instrumentation and the project's documented metrics.
+# =============================================================================
+
+groups:
+  - name: review-agent
+    rules:
+      # -----------------------------------------------------------------------
+      # HighErrorRate — error rate exceeds 5% over 5 minutes
+      # -----------------------------------------------------------------------
+      - alert: HighErrorRate
+        expr: |
+          rate(http_requests_total{status=~"5.."}[5m])
+          /
+          rate(http_requests_total[5m])
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "API error rate > 5% over 5 minutes"
+          description: |
+            Service {{ $labels.service }} has an error rate of
+            {{ $value | humanizePercentage }} over the last 5 minutes.
+            Check /healthz and recent deployment logs.
+
+      # -----------------------------------------------------------------------
+      # HighReviewLatency — P99 review time exceeds 5 minutes over 10 minutes
+      # -----------------------------------------------------------------------
+      - alert: HighReviewLatency
+        expr: |
+          histogram_quantile(
+            0.99,
+            rate(http_requests_duration_seconds_bucket[10m])
+          ) > 300
+        for: 10m
+        labels:
+          severity: warning
+          component: worker
+        annotations:
+          summary: "P99 review latency > 5 minutes"
+          description: |
+            P99 HTTP request duration is {{ $value }}s over 10 minutes.
+            Check ARQ worker health and AI model response times.
+
+      # -----------------------------------------------------------------------
+      # GitHubAPIRateLimit — remaining GitHub API calls < 10% of limit
+      # -----------------------------------------------------------------------
+      - alert: GitHubAPIRateLimit
+        expr: |
+          (
+            github_api_remaining{job="review-agent-api"}
+            /
+            github_api_limit{job="review-agent-api"}
+          ) < 0.10
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "GitHub API rate limit critically low"
+          description: |
+            Only {{ $value | humanizePercentage }} of the GitHub API
+            rate limit remains. Reduce request volume or rotate tokens.
+
+      # -----------------------------------------------------------------------
+      # QueueDepth — ARQ queue exceeds 100 tasks for 5 minutes
+      # -----------------------------------------------------------------------
+      - alert: QueueDepth
+        expr: queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: worker
+        annotations:
+          summary: "ARQ queue depth > 100 for 5 minutes"
+          description: |
+            ARQ queue has {{ $value }} pending tasks. Worker may be
+            overwhelmed — consider scaling worker replicas.
+
+      # -----------------------------------------------------------------------
+      # WorkerDown — worker not scraping for > 1 minute
+      # -----------------------------------------------------------------------
+      - alert: WorkerDown
+        expr: up{job="review-agent-worker"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: worker
+        annotations:
+          summary: "Worker {{ $labels.instance }} is down"
+          description: |
+            Worker {{ $labels.instance }} has not been reachable for
+            more than 1 minute. Check the worker container logs and
+            Redis connectivity.
+
+      # -----------------------------------------------------------------------
+      # DatabaseConnectionPoolExhausted — pool utilization > 80%
+      # -----------------------------------------------------------------------
+      - alert: DatabaseConnectionPoolExhausted
+        expr: db_pool_utilization > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Database connection pool > 80% utilized"
+          description: |
+            DB connection pool utilization is {{ $value | humanizePercentage }}.
+            Consider increasing max_connections or scaling PostgreSQL.
