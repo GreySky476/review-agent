@@ -66,13 +66,10 @@ async def _sync_loop(interval_seconds: int) -> None:
         try:
             async with async_session_factory() as db:
                 # 查询所有非删除且有仓库配置的项目
-                stmt = (
-                    select(ProjectModel)
-                    .where(
-                        ProjectModel.is_deleted.is_(False),
-                        ProjectModel.repo_url.isnot(None),
-                        ProjectModel.repo_url != "",
-                    )
+                stmt = select(ProjectModel).where(
+                    ProjectModel.is_deleted.is_(False),
+                    ProjectModel.repo_url.isnot(None),
+                    ProjectModel.repo_url != "",
                 )
                 rows = await db.execute(stmt)
                 projects = list(rows.scalars().all())
@@ -90,7 +87,8 @@ async def _sync_loop(interval_seconds: int) -> None:
                         await pool.enqueue_job("sync_project_data", project.id)
                     except Exception:
                         logger.exception(
-                            "Failed to enqueue sync for project %s", project.id,
+                            "Failed to enqueue sync for project %s",
+                            project.id,
                         )
                 await pool.close()
         except Exception:

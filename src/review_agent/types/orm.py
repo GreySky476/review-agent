@@ -131,6 +131,9 @@ class ReviewModel(Base, TimestampMixin, SoftDeleteMixin):
     findings: Mapped[list[FindingModel]] = relationship(
         "FindingModel", back_populates="review", cascade="all, delete-orphan"
     )
+    review_functions: Mapped[list[ReviewFunctionModel]] = relationship(
+        "ReviewFunctionModel", back_populates="review", cascade="all, delete-orphan"
+    )
 
 
 # ── Finding ──────────────────────────────────────────────
@@ -160,6 +163,36 @@ class FindingModel(Base, TimestampMixin, SoftDeleteMixin):
 
     # relationships
     review: Mapped[ReviewModel] = relationship("ReviewModel", back_populates="findings")
+
+
+# ── ReviewFunction ─────────────────────────────────────
+
+
+class ReviewFunctionModel(Base, TimestampMixin):
+    """函数级评审跟踪：记录每个函数在每次评审中的状态。"""
+
+    __tablename__ = "review_functions"
+    __table_args__ = (
+        UniqueConstraint(
+            "review_id", "file_path", "function_name", "start_line", name="uq_review_func"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    review_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("reviews.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    function_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    max_severity: Mapped[str | None] = mapped_column(
+        String(16), nullable=True
+    )  # NULL=clean, "critical"/"warning"/"info"
+    finding_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    review: Mapped[ReviewModel] = relationship("ReviewModel", back_populates="review_functions")
 
 
 # ── Rule ─────────────────────────────────────────────────
@@ -282,7 +315,9 @@ class CommitModel(Base, TimestampMixin):
     deletions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     files_changed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     committed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, default=None,
+        DateTime(timezone=True),
+        nullable=True,
+        default=None,
     )
 
 

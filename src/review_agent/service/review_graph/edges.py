@@ -47,6 +47,8 @@ def route_chunks(state: ReviewState) -> str:
 
     logger.info(
         "route_chunks: %d chunks → %d ai_batch, %d structural_batch",
-        len(chunks), len(ai_chunks), len(struct_chunks),
+        len(chunks),
+        len(ai_chunks),
+        len(struct_chunks),
     )
     return sends

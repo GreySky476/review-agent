@@ -17,8 +17,6 @@ class TestEstimateTokens:
     def test_empty_string(self) -> None:
         assert _estimate_tokens("") == 1
 
-    
-
     def test_longer_text(self) -> None:
         tokens = _estimate_tokens("a" * 300)
         assert tokens == 150  # 300 // 2 (changed from //3)

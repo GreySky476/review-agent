@@ -200,16 +200,19 @@ async def handle_push_event(
         except Exception:
             logger.warning(
                 "Failed to enqueue commit review for %s (attempt %d/3): %s",
-                sha, attempt + 1, traceback.format_exc(),
+                sha,
+                attempt + 1,
+                traceback.format_exc(),
             )
         if task_id:
             break
         if attempt < 2:
             logger.warning(
                 "Enqueue commit review for %s failed, retrying (%d/3)...",
-                sha, attempt + 1,
+                sha,
+                attempt + 1,
             )
-            await asyncio.sleep(2 ** attempt)  # 1s, 2s
+            await asyncio.sleep(2**attempt)  # 1s, 2s
     if task_id:
         review.task_id = task_id
         await db.flush()
@@ -357,9 +360,10 @@ async def trigger_pr_review(
         if attempt < 2:
             logger.warning(
                 "trigger_pr_review: enqueue failed for PR #%d, retrying (%d/3)...",
-                pr_number, attempt + 1,
+                pr_number,
+                attempt + 1,
             )
-            await asyncio.sleep(2 ** attempt)  # 1s, 2s
+            await asyncio.sleep(2**attempt)  # 1s, 2s
     if task_id:
         review.task_id = task_id
         await db.flush()

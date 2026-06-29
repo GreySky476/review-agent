@@ -94,7 +94,7 @@ async def run_ai_batch(
     # 构建 patch_map
     patch_map: dict[str, str | None] = {}
     for f in files:
-        if hasattr(f, 'filename') and hasattr(f, 'patch'):
+        if hasattr(f, "filename") and hasattr(f, "patch"):
             patch_map[f.filename] = f.patch
 
     # RAG 规则检索（合并到 BatchReviewEntry）
@@ -107,18 +107,21 @@ async def run_ai_batch(
             except Exception:
                 logger.warning(
                     "Knowledge base search failed for %s/%s",
-                    chunk.file_path, chunk.function_name or "?",
+                    chunk.file_path,
+                    chunk.function_name or "?",
                 )
-        entries.append(BatchReviewEntry(
-            file_path=chunk.file_path,
-            function_name=chunk.function_name,
-            source_code=chunk.source_code,
-            start_line=chunk.start_line,
-            end_line=chunk.end_line,
-            estimated_tokens=chunk.estimated_tokens,
-            patch=patch_map.get(chunk.file_path),
-            matched_rules=matched_rules,
-        ))
+        entries.append(
+            BatchReviewEntry(
+                file_path=chunk.file_path,
+                function_name=chunk.function_name,
+                source_code=chunk.source_code,
+                start_line=chunk.start_line,
+                end_line=chunk.end_line,
+                estimated_tokens=chunk.estimated_tokens,
+                patch=patch_map.get(chunk.file_path),
+                matched_rules=matched_rules,
+            )
+        )
 
     settings = get_settings()
     max_batch_tokens = settings.ai_batch_max_input_tokens  # default 3000, 0=disable
@@ -143,14 +146,14 @@ async def run_ai_batch(
 
         logger.info(
             "ai_batch: %d chunks -> %d batches (max_batch_tokens=%d)",
-            len(entries), len(batches), max_batch_tokens,
+            len(entries),
+            len(batches),
+            max_batch_tokens,
         )
     else:
         # 禁用批量：每个 chunk 单独一组
         batches = [[e] for e in entries]
-        logger.info(
-            "ai_batch: %d chunks, batching disabled", len(entries)
-        )
+        logger.info("ai_batch: %d chunks, batching disabled", len(entries))
 
     reviewer = AIReviewer(ai_provider)
     for batch in batches:

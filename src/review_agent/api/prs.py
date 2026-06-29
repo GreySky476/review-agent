@@ -116,12 +116,14 @@ async def get_pull_request_detail(
             # 查询 commit 级别（pr_number=None）的 review
             # 使用 asc() 排序：最早创建的先处理，最新创建的覆盖旧记录
             extra_reviews_result = await db.execute(
-                select(ReviewModel).where(
+                select(ReviewModel)
+                .where(
                     ReviewModel.project_id == project_id,
                     ReviewModel.head_sha.in_(commit_shas),
                     ReviewModel.is_deleted.is_(False),
                     ReviewModel.pr_number.is_(None),
-                ).order_by(ReviewModel.create_time.asc())
+                )
+                .order_by(ReviewModel.create_time.asc())
             )
             all_sha_reviews = list(extra_reviews_result.scalars().all())
 
@@ -138,21 +140,24 @@ async def get_pull_request_detail(
             for c in commit_records:
                 sha = c.sha
                 rv_info = review_by_sha.get(sha, {})
-                commits_data.append({
-                    "sha": sha,
-                    "message": c.message or "",
-                    "author": c.author,
-                    "date": c.committed_at.isoformat() if c.committed_at else None,
-                    "review_id": rv_info.get("review_id"),
-                    "review_status": rv_info.get("status"),
-                    "review_score": rv_info.get("score"),
-                    "reviewed_files": rv_info.get("reviewed_files"),
-                })
+                commits_data.append(
+                    {
+                        "sha": sha,
+                        "message": c.message or "",
+                        "author": c.author,
+                        "date": c.committed_at.isoformat() if c.committed_at else None,
+                        "review_id": rv_info.get("review_id"),
+                        "review_status": rv_info.get("status"),
+                        "review_score": rv_info.get("score"),
+                        "reviewed_files": rv_info.get("reviewed_files"),
+                    }
+                )
         else:
             # DB 无数据，回退到 GitHub API（首次加载时保证可见）
             logger.debug(
                 "No cached commits for PR #%d in project %s, falling back to GitHub API",
-                pr_number, project_id,
+                pr_number,
+                project_id,
             )
             try:
                 project = await ProjectRepo(db).get(project_id)
@@ -165,12 +170,14 @@ async def get_pull_request_detail(
                         fallback_shas = [c["sha"] for c in pr_commits if c.get("sha")]
                         if fallback_shas:
                             extra_fallback = await db.execute(
-                                select(ReviewModel).where(
+                                select(ReviewModel)
+                                .where(
                                     ReviewModel.project_id == project_id,
                                     ReviewModel.head_sha.in_(fallback_shas),
                                     ReviewModel.is_deleted.is_(False),
                                     ReviewModel.pr_number.is_(None),
-                                ).order_by(ReviewModel.create_time.asc())
+                                )
+                                .order_by(ReviewModel.create_time.asc())
                             )
                             for rv_extra in list(extra_fallback.scalars().all()):
                                 if rv_extra.head_sha:
@@ -183,19 +190,22 @@ async def get_pull_request_detail(
                         for c in pr_commits:
                             sha = c["sha"]
                             rv_info = review_by_sha.get(sha, {})
-                            commits_data.append({
-                                "sha": sha,
-                                "message": c.get("message", ""),
-                                "author": c.get("author"),
-                                "date": c.get("date"),
-                                "review_id": rv_info.get("review_id"),
-                                "review_status": rv_info.get("status"),
-                                "review_score": rv_info.get("score"),
-                                "reviewed_files": rv_info.get("reviewed_files"),
-                            })
+                            commits_data.append(
+                                {
+                                    "sha": sha,
+                                    "message": c.get("message", ""),
+                                    "author": c.get("author"),
+                                    "date": c.get("date"),
+                                    "review_id": rv_info.get("review_id"),
+                                    "review_status": rv_info.get("status"),
+                                    "review_score": rv_info.get("score"),
+                                    "reviewed_files": rv_info.get("reviewed_files"),
+                                }
+                            )
                         logger.info(
                             "Fetched %d commits from GitHub API for PR #%d",
-                            len(pr_commits), pr_number,
+                            len(pr_commits),
+                            pr_number,
                         )
             except Exception as fb_exc:
                 logger.debug("GitHub API fallback failed: %s", fb_exc)
@@ -288,7 +298,9 @@ async def sync_pull_request_commits(
         await db.commit()
         logger.info(
             "Synced %d commits for PR #%d in project %s",
-            len(pr_commits), pr_number, project_id,
+            len(pr_commits),
+            pr_number,
+            project_id,
         )
     except Exception as exc:
         logger.warning("Failed to write commits to DB: %s", exc)
@@ -305,12 +317,14 @@ async def sync_pull_request_commits(
         commit_shas = [c["sha"] for c in pr_commits]
 
         extra_reviews_result = await db.execute(
-            select(ReviewModel).where(
+            select(ReviewModel)
+            .where(
                 ReviewModel.project_id == project_id,
                 ReviewModel.head_sha.in_(commit_shas),
                 ReviewModel.is_deleted.is_(False),
                 ReviewModel.pr_number.is_(None),
-            ).order_by(ReviewModel.create_time.asc())
+            )
+            .order_by(ReviewModel.create_time.asc())
         )
         all_sha_reviews = list(extra_reviews_result.scalars().all())
 
@@ -328,16 +342,18 @@ async def sync_pull_request_commits(
         for c in pr_commits:
             sha = c["sha"]
             rv_info = review_by_sha.get(sha, {})
-            commits_data.append({
-                "sha": sha,
-                "message": c.get("message", ""),
-                "author": c.get("author"),
-                "date": c.get("date"),
-                "review_id": rv_info.get("review_id"),
-                "review_status": rv_info.get("status"),
-                "review_score": rv_info.get("score"),
-                "reviewed_files": rv_info.get("reviewed_files"),
-            })
+            commits_data.append(
+                {
+                    "sha": sha,
+                    "message": c.get("message", ""),
+                    "author": c.get("author"),
+                    "date": c.get("date"),
+                    "review_id": rv_info.get("review_id"),
+                    "review_status": rv_info.get("status"),
+                    "review_score": rv_info.get("score"),
+                    "reviewed_files": rv_info.get("reviewed_files"),
+                }
+            )
     except Exception as exc:
         logger.debug("Failed to merge review info during sync: %s", exc)
 
@@ -361,7 +377,9 @@ async def trigger_pr_review(
     """
     logger.info(
         "Manual PR review triggered: project=%s pr=#%d force=%s",
-        project_id, pr_number, force,
+        project_id,
+        pr_number,
+        force,
     )
 
     # 1. 查找项目
@@ -404,7 +422,9 @@ async def trigger_pr_review(
                     logger.info(
                         "SHA %s for PR #%d already has completed review %s, skipping"
                         " (use force=true to override)",
-                        pr_head_sha[:8], pr_number, existing_shas.id[:8],
+                        pr_head_sha[:8],
+                        pr_number,
+                        existing_shas.id[:8],
                     )
                     return JSONResponse(
                         {"status": "skipped", "reason": "sha_unchanged"},
@@ -414,7 +434,8 @@ async def trigger_pr_review(
                 if not force:
                     logger.info(
                         "SHA %s for PR #%d review in progress, rejecting",
-                        pr_head_sha[:8], pr_number,
+                        pr_head_sha[:8],
+                        pr_number,
                     )
                     return JSONResponse(
                         {
@@ -479,8 +500,7 @@ async def trigger_pr_review(
                 prev_findings = await FindingRepo(db).list_by_review(prev_review.id)
                 previous_file_paths = list({f.file_path for f in prev_findings})
                 previous_reviewed_files = [
-                    {"path": f.file_path, "max_severity": f.severity}
-                    for f in prev_findings
+                    {"path": f.file_path, "max_severity": f.severity} for f in prev_findings
                 ]
             logger.info(
                 "Previous review loaded: id=%s sha=%s files=%d",
@@ -524,8 +544,14 @@ async def trigger_pr_review(
     logger.info(
         "PR review enqueued: project=%s pr=#%d sha=%s task=%s review=%s files=%d"
         " incremental=%s reviewed_files=%d",
-        project_id, pr_number, pr_head_sha[:8], task_id, review.id, len(all_files),
-        bool(previous_review_id), len(previous_reviewed_files),
+        project_id,
+        pr_number,
+        pr_head_sha[:8],
+        task_id,
+        review.id,
+        len(all_files),
+        bool(previous_review_id),
+        len(previous_reviewed_files),
     )
 
     return JSONResponse(

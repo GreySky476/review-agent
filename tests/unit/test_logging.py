@@ -17,8 +17,13 @@ class TestStructuredJSONFormatter:
 
     def test_formatter_outputs_valid_json(self):
         record = self.logger.makeRecord(
-            name="test", level=logging.INFO, fn="test.py", lno=1,
-            msg="hello world", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            fn="test.py",
+            lno=1,
+            msg="hello world",
+            args=(),
+            exc_info=None,
         )
         output = self.formatter.format(record)
         parsed = json.loads(output)
@@ -26,8 +31,13 @@ class TestStructuredJSONFormatter:
 
     def test_formatter_includes_trace_id(self):
         record = self.logger.makeRecord(
-            name="test", level=logging.INFO, fn="test.py", lno=1,
-            msg="test", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            fn="test.py",
+            lno=1,
+            msg="test",
+            args=(),
+            exc_info=None,
         )
         record.trace_id = "abc123"
         output = self.formatter.format(record)
@@ -63,7 +73,10 @@ class TestSetupOpenTelemetry:
             patch("opentelemetry.trace", mock_trace),
             patch("opentelemetry.sdk.resources.Resource", mock_resource),
             patch("opentelemetry.sdk.trace.TracerProvider", mock_tp),
-            patch("opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter", mock_exporter),
+            patch(
+                "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter",
+                mock_exporter,
+            ),
         ):
             setup_opentelemetry("test", "http://localhost:4318", enabled=True)
             mock_tp.assert_called_once()
@@ -76,7 +89,10 @@ class TestSetupOpenTelemetry:
             patch("opentelemetry.trace", MagicMock()),
             patch("opentelemetry.sdk.resources.Resource", MagicMock()),
             patch("opentelemetry.sdk.trace.TracerProvider", MagicMock()),
-            patch("opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter", MagicMock()),
+            patch(
+                "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter",
+                MagicMock(),
+            ),
             patch("opentelemetry.instrumentation.fastapi.FastAPIInstrumentor", mock_fastapi_instr),
         ):
             mock_app = MagicMock()
@@ -91,7 +107,10 @@ class TestSetupOpenTelemetry:
             patch("opentelemetry.trace", MagicMock()),
             patch("opentelemetry.sdk.resources.Resource", MagicMock()),
             patch("opentelemetry.sdk.trace.TracerProvider", MagicMock()),
-            patch("opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter", MagicMock()),
+            patch(
+                "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter",
+                MagicMock(),
+            ),
             patch("opentelemetry.instrumentation.httpx.HTTPXClientInstrumentor", mock_httpx_cls),
         ):
             setup_opentelemetry("test", "http://localhost:4318", enabled=True)
@@ -109,7 +128,10 @@ class TestSetupOpenTelemetry:
             patch("opentelemetry.trace", MagicMock()),
             patch("opentelemetry.sdk.resources.Resource", MagicMock()),
             patch("opentelemetry.sdk.trace.TracerProvider", MagicMock()),
-            patch("opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter", MagicMock()),
+            patch(
+                "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter",
+                MagicMock(),
+            ),
             patch("opentelemetry.instrumentation.fastapi.FastAPIInstrumentor", mock_fi),
             patch("opentelemetry.instrumentation.httpx.HTTPXClientInstrumentor", mock_hc),
         ):

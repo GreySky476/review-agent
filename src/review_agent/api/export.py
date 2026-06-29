@@ -42,16 +42,22 @@ def _render_findings_table(findings: list[FindingModel]) -> list[str]:
         lines.append(f"| 🔵 Info | {info} |")
     lines.append("")
 
-    lines.extend([
-        "### 问题详情\n",
-        "| 严重性 | 类别 | 位置 | 问题 | 建议 |",
-        "|--------|------|------|------|------|",
-    ])
+    lines.extend(
+        [
+            "### 问题详情\n",
+            "| 严重性 | 类别 | 位置 | 问题 | 建议 |",
+            "|--------|------|------|------|------|",
+        ]
+    )
 
     severity_order = {"critical": 0, "warning": 1, "info": 2}
     category_priority = {
-        "bug": 0, "security": 1, "performance": 2,
-        "structure": 3, "style": 4, "dependency": 5,
+        "bug": 0,
+        "security": 1,
+        "performance": 2,
+        "structure": 3,
+        "style": 4,
+        "dependency": 5,
     }
 
     sorted_f = sorted(
@@ -70,10 +76,7 @@ def _render_findings_table(findings: list[FindingModel]) -> list[str]:
             location += f":{f.line_start}"
         title = f.title.replace("|", "\\|")
         suggestion = (f.suggestion or "").replace("|", "\\|").replace("\n", " ")
-        lines.append(
-            f"| {icon} **{label}** | {f.category} |"
-            f" {location} | {title} | {suggestion} |"
-        )
+        lines.append(f"| {icon} **{label}** | {f.category} | {location} | {title} | {suggestion} |")
 
     return lines
 
@@ -239,22 +242,22 @@ async def export_pr_reviews_md(
     avg_score = round(total_score / len(all_reviews), 1) if all_reviews else 0
     total_findings = sum(len(f) for f in findings_by_review.values())
 
-    lines.extend([
-        "## 汇总\n",
-        "| # | Commit | 类型 | 评分 | Findings |",
-        "|--:|--------|------|----:|---------:|",
-        *summary_rows,
-        f"| | **合计** | | **{avg_score}** | **{total_findings}** |",
-        "",
-    ])
+    lines.extend(
+        [
+            "## 汇总\n",
+            "| # | Commit | 类型 | 评分 | Findings |",
+            "|--:|--------|------|----:|---------:|",
+            *summary_rows,
+            f"| | **合计** | | **{avg_score}** | **{total_findings}** |",
+            "",
+        ]
+    )
 
     content = "\n".join(lines)
     return PlainTextResponse(
         content,
         media_type="text/markdown",
         headers={
-            "Content-Disposition": (
-                f'attachment; filename="pr-{pr_number}-review-report.md"'
-            ),
+            "Content-Disposition": (f'attachment; filename="pr-{pr_number}-review-report.md"'),
         },
     )

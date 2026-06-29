@@ -34,9 +34,7 @@ class ReviewRepo(BaseRepository[ReviewModel]):  # type: ignore[misc]
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def list_by_pr(
-        self, project_id: str, pr_number: int
-    ) -> list[ReviewModel]:
+    async def list_by_pr(self, project_id: str, pr_number: int) -> list[ReviewModel]:
         """查询 PR 的所有评审记录（按时间升序）。"""
         stmt = (
             select(ReviewModel)

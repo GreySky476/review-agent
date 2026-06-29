@@ -148,7 +148,8 @@ async def run_all_checks(session: object, webhook_check: bool = True) -> None:
         if all_synced:
             logger.debug(
                 "Health sync skipped: all %d %s projects already in target state",
-                len(rows), platform_val,
+                len(rows),
+                platform_val,
             )
             continue
 
@@ -165,7 +166,9 @@ async def run_all_checks(session: object, webhook_check: bool = True) -> None:
         await session.flush()  # type: ignore[arg-type]
         logger.info(
             "Health sync: %d/%d %s projects updated to webhook_enabled=%s",
-            changed, len(rows), platform_val, is_connected,
+            changed,
+            len(rows),
+            platform_val,
+            is_connected,
         )
     logger.info("Health check done")
-

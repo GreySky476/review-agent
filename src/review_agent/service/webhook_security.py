@@ -81,7 +81,8 @@ class GitHubIPChecker:
             return None
 
     def _parse_networks(
-        self, cidr_list: list[str],
+        self,
+        cidr_list: list[str],
     ) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
         """将 CIDR 字符串列表解析为网络对象列表。"""
         networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
@@ -133,8 +134,7 @@ class GitHubIPChecker:
         loaded = await self._ensure_loaded()
         if not loaded or self._hook_networks is None:
             logger.warning(
-                "GitHub IP whitelist unavailable, ALLOWING request "
-                "(degraded security mode)"
+                "GitHub IP whitelist unavailable, ALLOWING request (degraded security mode)"
             )
             return True
 
@@ -325,7 +325,8 @@ def check_payload_size(content_length: int | None, raw_body: bytes | None = None
         if content_length > _MAX_PAYLOAD_BYTES:
             logger.warning(
                 "Payload too large: Content-Length=%d > %d",
-                content_length, _MAX_PAYLOAD_BYTES,
+                content_length,
+                _MAX_PAYLOAD_BYTES,
             )
             return False
         return True
@@ -334,7 +335,8 @@ def check_payload_size(content_length: int | None, raw_body: bytes | None = None
     if raw_body is not None and len(raw_body) > _MAX_PAYLOAD_BYTES:
         logger.warning(
             "Payload too large: actual_size=%d > %d",
-            len(raw_body), _MAX_PAYLOAD_BYTES,
+            len(raw_body),
+            _MAX_PAYLOAD_BYTES,
         )
         return False
 

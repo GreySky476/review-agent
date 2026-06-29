@@ -15,8 +15,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '3d6967064f94'
-down_revision: str | None = '021107dc0f72'
+revision: str = "3d6967064f94"
+down_revision: str | None = "021107dc0f72"
 branch_labels: str | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -55,11 +55,11 @@ def upgrade() -> None:
 
     # Step 2: 添加唯一约束
     op.create_unique_constraint(
-        'uq_review_project_pr_sha',
-        'reviews',
-        ['project_id', 'pr_number', 'head_sha'],
+        "uq_review_project_pr_sha",
+        "reviews",
+        ["project_id", "pr_number", "head_sha"],
     )
 
 
 def downgrade() -> None:
-    op.drop_constraint('uq_review_project_pr_sha', 'reviews', type_='unique')
+    op.drop_constraint("uq_review_project_pr_sha", "reviews", type_="unique")
