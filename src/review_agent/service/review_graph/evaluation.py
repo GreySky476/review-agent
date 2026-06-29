@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -156,13 +157,62 @@ async def run_ai_batch(
         logger.info("ai_batch: %d chunks, batching disabled", len(entries))
 
     reviewer = AIReviewer(ai_provider)
-    for batch in batches:
+    ai_stats: dict[str, int] = {
+        "total": len(batches),
+        "failed": 0,
+        "prompt_tokens_est": 0,
+        "completion_tokens_est": 0,
+    }
+    for batch_idx, batch in enumerate(batches):
+        batch_tokens = sum(e.estimated_tokens for e in batch)
         try:
+            import time as time_module
+
+            t0 = time_module.monotonic()
             findings_list = await reviewer.review_chunks(batch)
+            elapsed = time_module.monotonic() - t0
             for findings in findings_list:
                 all_findings.extend(findings)
+            ai_stats["prompt_tokens_est"] += batch_tokens
+            ai_stats["completion_tokens_est"] += len(batch) * 500
+            batch_files = [f"{e.file_path}::{e.function_name or '?'}" for e in batch[:5]]
+            logger.info(
+                "ai_batch_exec: batch=%d/%d entries=%d tok_est=%d elapsed=%.1fs "
+                "findings=%d files=%s",
+                batch_idx + 1,
+                len(batches),
+                len(batch),
+                batch_tokens,
+                elapsed,
+                sum(len(f) for f in findings_list),
+                batch_files,
+            )
+            # 异步写入 AI 调用记录
+            asyncio.create_task(
+                _write_ai_call(
+                    review_id=state.get("review_id", ""),
+                    batch_idx=batch_idx,
+                    model="",
+                    prompt_tokens=batch_tokens,
+                    completion_tokens=len(batch) * 500,
+                    duration_ms=int(elapsed * 1000),
+                    status="success",
+                )
+            )
         except Exception as exc:
-            logger.warning("Batch AI review failed for %d chunks: %s", len(batch), exc)
+            ai_stats["failed"] += 1
+            asyncio.create_task(
+                _write_ai_call(
+                    review_id=state.get("review_id", ""),
+                    batch_idx=batch_idx,
+                    model="",
+                    prompt_tokens=batch_tokens,
+                    completion_tokens=0,
+                    duration_ms=0,
+                    status="failed",
+                    error_msg=str(exc),
+                )
+            )
             # 标记未完成文件
             for entry in batch:
                 file_label = f"{entry.file_path}:{entry.function_name or '?'}"
@@ -178,7 +228,11 @@ async def run_ai_batch(
             ]
 
     logger.info("ai_batch: %d chunks -> %d total AI findings", len(chunks), len(all_findings))
-    return {"ai_findings": all_findings, "unreviewed_files": state.get("unreviewed_files", [])}
+    return {
+        "ai_findings": all_findings,
+        "unreviewed_files": state.get("unreviewed_files", []),
+        "ai_stats": ai_stats,
+    }
 
 
 async def structural_review_chunk(state: ReviewState) -> dict[str, Any]:
@@ -200,3 +254,37 @@ async def structural_review_chunk(state: ReviewState) -> dict[str, Any]:
         len(findings),
     )
     return {"structural_findings": findings}
+
+
+async def _write_ai_call(
+    review_id: str,
+    batch_idx: int,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    duration_ms: int,
+    status: str,
+    error_msg: str | None = None,
+) -> None:
+    """异步写入 AI 调用记录到 review_ai_calls 表。"""
+    try:
+        from review_agent.config.database import async_session_factory
+        from review_agent.types.orm import ReviewAICallModel
+
+        async with async_session_factory() as db:
+            db.add(
+                ReviewAICallModel(
+                    review_id=review_id,
+                    batch_idx=batch_idx,
+                    model=model or "deepseek-v4-flash",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens,
+                    duration_ms=duration_ms,
+                    status=status,
+                    error_message=error_msg,
+                )
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Failed to write AI call record: %s", exc)

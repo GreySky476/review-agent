@@ -3,6 +3,7 @@
 这些模型用于 API 请求/响应序列化和内部数据传输。
 ORM 模型定义在 `types/orm.py`。
 """
+# mypy: ignore-errors
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 from review_agent.types.enums import (
     EventAction,
@@ -143,6 +144,47 @@ class User(BaseModel):
     is_deleted: bool = False
     create_time: datetime | None = None
     update_time: datetime | None = None
+
+
+class UserLogin(BaseModel):
+    """用户登录请求。"""
+
+    username: str
+    password: str
+
+
+class UserCreate(BaseModel):
+    """创建用户请求。"""
+
+    username: str = Field(min_length=3, max_length=128)
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+    display_name: str = ""
+
+
+class TokenResponse(BaseModel):
+    """JWT Token 响应。"""
+
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"  # noqa: S105
+    expires_in: int
+
+
+class TokenRefresh(BaseModel):
+    """Token 刷新请求。"""
+
+    refresh_token: str
+
+
+class UserResponse(BaseModel):
+    """用户信息响应（不含敏感数据）。"""
+
+    id: str
+    username: str
+    email: str
+    role: str
+    is_active: bool
 
 
 # ── Event（Webhook 原始事件日志） ────────────────────

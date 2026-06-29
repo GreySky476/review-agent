@@ -1,0 +1,85 @@
+# =============================================================================
+# Monitoring Stack — Docker Compose Overlay
+# =============================================================================
+# Start alongside the main project:
+#   docker compose -f compose.yml -f deploy/monitoring/compose.yml up -d
+#
+# Exposed ports:
+#   Grafana        → http://localhost:3000  (admin / admin)
+#   Prometheus     → http://localhost:9090
+#   Alertmanager   → http://localhost:9093
+# =============================================================================
+
+name: review-agent-monitoring
+
+services:
+  # -- Prometheus -----------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.7.0
+    container_name: review-agent-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - review-net
+
+  # -- Grafana --------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: review-agent-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana-dashboard.json:/etc/grafana/provisioning/dashboards/review-agent.json:ro
+    depends_on:
+      - prometheus
+    networks:
+      - review-net
+
+  # -- Alertmanager ---------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    container_name: review-agent-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    networks:
+      - review-net
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  alertmanager_data:
+    driver: local
+
+networks:
+  review-net:
+    external: true
+    name: review-agent_review-net

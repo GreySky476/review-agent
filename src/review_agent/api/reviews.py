@@ -5,21 +5,37 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from review_agent.api.dependencies.auth import require_role
 from review_agent.api.review_detail import _calc_duration, _fetch_finding_breakdowns
 from review_agent.config.database import get_session
-from review_agent.repo.comment import CommentRepo
-from review_agent.repo.review import ReviewRepo
-from review_agent.types.enums import ReviewStatus
+from review_agent.service.review_handler import (
+    count_reviews as _count_reviews,
+)
+from review_agent.service.review_handler import (
+    create_comment_for_review,
+    create_or_get_review,
+    get_review_by_id,
+    list_comments_by_review,
+)
+from review_agent.service.review_handler import (
+    list_reviews as _list_reviews_query,
+)
+from review_agent.types.enums import ReviewStatus, UserRole
 from review_agent.types.models import ReviewCreate
-from review_agent.types.orm import ProjectModel, ReviewModel
+from review_agent.types.orm import ProjectModel, ReviewAICallModel, ReviewModel
 
-router = APIRouter(tags=["reviews"])
+router = APIRouter(tags=["reviews"])  # TODO: 登录页面未就绪，暂时不启用 JWT 认证
 
 
-@router.post("/projects/{project_id}/reviews", status_code=202)
+@router.post(
+    "/projects/{project_id}/reviews",
+    status_code=202,
+    dependencies=[Depends(require_role(UserRole.PROJECT_ADMIN))],
+)
 async def trigger_review(
     project_id: str,
     _body: ReviewCreate,
@@ -27,8 +43,8 @@ async def trigger_review(
 ) -> dict[str, Any]:
     """手动触发评审。"""
     _ = project_id
-    review_repo = ReviewRepo(db)
-    review, is_new = await review_repo.create_or_get(
+    review, is_new = await create_or_get_review(
+        db,
         project_id=project_id,
         pr_number=_body.pr_number,
         head_sha=_body.head_sha,
@@ -53,8 +69,7 @@ async def get_review_status(
 ) -> dict[str, Any]:
     """查询评审任务状态。"""
     _ = (project_id, task_id)
-    repo = ReviewRepo(db)
-    review = await repo.get(task_id)
+    review = await get_review_by_id(db, task_id)
     if review is None:
         return {
             "task_id": task_id,
@@ -77,19 +92,23 @@ async def get_review_status(
 @router.get("/projects/{project_id}/reviews")
 async def list_reviews(
     project_id: str,
-    status: str | None = Query(None, pattern="^(pending|running|completed|failed)$"),
+    status: str | None = Query(
+        None, pattern="^(pending|running|completed|completed_with_errors|failed)$"
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """获取项目的评审记录列表。"""
-    repo = ReviewRepo(db)
     filters: dict[str, Any] = {"project_id": project_id}
     if status:
         filters["status"] = status
-    items = await repo.list(skip=(page - 1) * page_size, limit=page_size, filters=filters)
-    total = await repo.count(filters=filters)
+    items = await _list_reviews_query(
+        db, skip=(page - 1) * page_size, limit=page_size, filters=filters
+    )
+    total = await _count_reviews(db, filters=filters)
     breakdowns = await _fetch_finding_breakdowns(db, [r.id for r in items])
+    fail_counts = await _batch_query_ai_fail_counts(db, [r.id for r in items])
     return {
         "items": [
             {
@@ -104,6 +123,8 @@ async def list_reviews(
                 "category_breakdown": dict(breakdowns.get(r.id, {}).get("category", {})),
                 "duration_seconds": _calc_duration(r),
                 "create_time": r.create_time.isoformat() if r.create_time else None,
+                "metrics": _metrics_response(r),
+                "ai_call_failed": fail_counts.get(r.id, 0),
             }
             for r in items
         ],
@@ -119,8 +140,7 @@ async def list_review_comments(
     db: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
     """获取评审的所有评论。"""
-    repo = CommentRepo(db)
-    comments = await repo.list_by_review(review_id)
+    comments = await list_comments_by_review(db, review_id)
     return [
         {
             "id": c.id,
@@ -142,8 +162,8 @@ async def create_review_comment(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """添加评论到评审。"""
-    repo = CommentRepo(db)
-    comment = await repo.create(
+    comment = await create_comment_for_review(
+        db,
         review_id=review_id,
         finding_id=body.get("finding_id"),
         author=body.get("author", "anonymous"),
@@ -157,7 +177,9 @@ async def create_review_comment(
 @router.get("/reviews")
 async def list_all_reviews(
     project_id: str | None = Query(None),
-    status: str | None = Query(None, pattern="^(pending|running|completed|failed)$"),
+    status: str | None = Query(
+        None, pattern="^(pending|running|completed|completed_with_errors|failed)$"
+    ),
     score_min: int | None = Query(None, ge=0, le=100),
     score_max: int | None = Query(None, ge=0, le=100),
     date_from: str | None = Query(None),
@@ -205,6 +227,7 @@ async def list_all_reviews(
         review_ids.append(review.id)
     breakdowns = await _fetch_finding_breakdowns(db, review_ids)
 
+    fail_counts = await _batch_query_ai_fail_counts(db, [review.id for review, _ in row_list])
     items: list[dict[str, Any]] = []
     for review, project_name in row_list:
         bd = breakdowns.get(review.id, {})
@@ -223,6 +246,35 @@ async def list_all_reviews(
                 "category_breakdown": dict(bd.get("category", {})),
                 "duration_seconds": _calc_duration(review),
                 "create_time": review.create_time.isoformat() if review.create_time else None,
+                "metrics": _metrics_response(review),
+                "ai_call_failed": fail_counts.get(review.id, 0),
             }
         )
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+def _metrics_response(r: ReviewModel) -> dict[str, Any]:
+    """构建评审的监控指标响应。"""
+    return {
+        "total_prompt_tokens": r.total_prompt_tokens,
+        "total_completion_tokens": r.total_completion_tokens,
+        "ai_call_count": r.ai_call_count,
+        "pipeline_duration_ms": r.pipeline_duration_ms,
+        "chunk_count": r.chunk_count,
+        "file_count": r.file_count,
+    }
+
+
+async def _batch_query_ai_fail_counts(db: AsyncSession, review_ids: list[str]) -> dict[str, int]:
+    """批量查询各评审的 AI 调用失败次数。"""
+    if not review_ids:
+        return {}
+    rows = await db.execute(
+        select(ReviewAICallModel.review_id, sa_func.count())
+        .where(
+            ReviewAICallModel.review_id.in_(review_ids),
+            ReviewAICallModel.status == "failed",
+        )
+        .group_by(ReviewAICallModel.review_id)
+    )
+    return {row[0]: row[1] for row in rows.all()}

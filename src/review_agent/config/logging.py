@@ -11,6 +11,25 @@ import sys
 from typing import Any
 
 
+class TraceIdFilter(logging.Filter):
+    """将当前 OpenTelemetry span 的 trace_id 注入每条日志记录。
+
+    当 OTEL 未启用或无 active span 时，trace_id 保持 None。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            from opentelemetry import trace as otel_trace
+
+            span = otel_trace.get_current_span()
+            span_ctx = span.get_span_context()
+            if span_ctx.is_valid:
+                record.trace_id = hex(span_ctx.trace_id)[2:]
+        except Exception:
+            pass
+        return True
+
+
 class StructuredJSONFormatter(logging.Formatter):
     """结构化 JSON 日志格式化器。"""
 
@@ -42,6 +61,9 @@ def setup_logging(level: str = "INFO") -> None:
     # 清除已有 handler，避免重复添加
     root_logger.handlers.clear()
     root_logger.addHandler(handler)
+
+    # 注入 TraceIdFilter：将当前 span 的 trace_id 写入每条日志
+    root_logger.addFilter(TraceIdFilter())
 
     # 关闭第三方库的噪音日志
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -100,3 +122,12 @@ def setup_opentelemetry(
         logging.getLogger(__name__).info("OpenTelemetry: httpx instrumented")
     except Exception as exc:
         logging.getLogger(__name__).warning("Failed to instrument httpx: %s", exc)
+
+    # LoggingInstrumentor：自动将 trace_id/span_id 注入每条 LogRecord
+    try:
+        from opentelemetry.instrumentation.logging import LoggingInstrumentor
+
+        LoggingInstrumentor().instrument(set_logging_format=False)
+        logging.getLogger(__name__).info("OpenTelemetry: logging instrumented")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Failed to instrument logging: %s", exc)

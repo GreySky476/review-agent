@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from review_agent.config.database import get_session
 from review_agent.types.orm import FindingModel, ProjectModel, ReviewModel
 
-router = APIRouter(tags=["review-detail"])
+router = APIRouter(tags=["review-detail"])  # TODO: 登录页面未就绪，暂时不启用 JWT 认证
 
 
 def _calc_duration(review: ReviewModel) -> int | None:
@@ -53,7 +53,7 @@ async def _fetch_file_summary(db: AsyncSession, review_id: str) -> list[dict[str
             FindingModel.review_id == review_id
         )
     )
-    file_map: dict[str, Counter] = {}
+    file_map: dict[str, Counter[str]] = {}
     for r in rows.all():
         if r.file_path not in file_map:
             file_map[r.file_path] = Counter()
@@ -93,8 +93,8 @@ async def get_review_detail(
         )
     )
     findings: list[dict[str, Any]] = []
-    severity_counts: Counter = Counter()
-    category_counts: Counter = Counter()
+    severity_counts: Counter[str] = Counter()
+    category_counts: Counter[str] = Counter()
     for f in finding_rows.scalars().all():
         severity_counts[f.severity] += 1
         category_counts[f.category] += 1
@@ -130,13 +130,52 @@ async def get_review_detail(
         "update_time": review.update_time.isoformat() if review.update_time else None,
         "task_id": review.task_id,
         "error_message": review.error_message,
+        "summary_markdown": review.summary_markdown,
         "statistics": {
             "severity": dict(severity_counts),
             "category": dict(category_counts),
         },
         "file_summary": file_summary,
         "findings": findings,
+        "metrics": {
+            "total_prompt_tokens": review.total_prompt_tokens,
+            "total_completion_tokens": review.total_completion_tokens,
+            "ai_call_count": review.ai_call_count,
+            "pipeline_duration_ms": review.pipeline_duration_ms,
+            "chunk_count": review.chunk_count,
+            "file_count": review.file_count,
+        },
     }
+
+
+@router.get("/reviews/{review_id}/ai-calls")
+async def list_review_ai_calls(
+    review_id: str,
+    db: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """查询评审的 AI 调用明细列表。"""
+    from review_agent.types.orm import ReviewAICallModel
+
+    rows = await db.execute(
+        select(ReviewAICallModel)
+        .where(ReviewAICallModel.review_id == review_id)
+        .order_by(ReviewAICallModel.batch_idx)
+    )
+    return [
+        {
+            "id": r.id,
+            "batch_idx": r.batch_idx,
+            "model": r.model,
+            "prompt_tokens": r.prompt_tokens,
+            "completion_tokens": r.completion_tokens,
+            "total_tokens": r.total_tokens,
+            "duration_ms": r.duration_ms,
+            "status": r.status,
+            "error_message": r.error_message,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows.scalars().all()
+    ]
 
 
 @router.get("/reviews/stats")

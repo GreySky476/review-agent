@@ -1,0 +1,100 @@
+# =============================================================================
+# review-agent — PostgreSQL 16 StatefulSet + Service
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: review-agent
+  labels:
+    app: review-agent
+    component: db
+spec:
+  type: ClusterIP
+  clusterIP: None  # headless service for StatefulSet
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres
+  selector:
+    app: review-agent
+    component: db
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: review-agent
+  labels:
+    app: review-agent
+    component: db
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: review-agent
+      component: db
+  template:
+    metadata:
+      labels:
+        app: review-agent
+        component: db
+    spec:
+      containers:
+        - name: postgres
+          image: "postgres:16-alpine"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              protocol: TCP
+              name: postgres
+          env:
+            - name: POSTGRES_USER
+              value: "review"
+            - name: POSTGRES_PASSWORD
+              value: "review"
+            - name: POSTGRES_DB
+              value: "review_agent"
+            - name: PGDATA
+              value: "/var/lib/postgresql/data/pgdata"
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - "-U"
+                - "review"
+                - "-d"
+                - "review_agent"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - "-U"
+                - "review"
+                - "-d"
+                - "review_agent"
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+        labels:
+          app: review-agent
+          component: db
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: "10Gi"

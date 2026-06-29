@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, cast
 
 from review_agent.config.settings import get_settings
 from review_agent.service.ai.base import AIProvider
@@ -142,8 +142,21 @@ class AIReviewer:
         )
 
         try:
+            import time as time_module
+
+            t0 = time_module.monotonic()
             response = await self._ai.complete(request)
-            return self._parse_response(response.content, chunk)
+            elapsed = time_module.monotonic() - t0
+            findings = self._parse_response(response.content, chunk)
+            logger.info(
+                "ai_review_chunk: %s/%s tok=%d elapsed=%.1fs findings=%d",
+                chunk.file_path,
+                chunk.function_name,
+                chunk.estimated_tokens,
+                elapsed,
+                len(findings),
+            )
+            return findings
         except Exception as exc:
             logger.warning(
                 "AI review failed for %s/%s: %s",
@@ -250,7 +263,7 @@ class AIReviewer:
 
         try:
             response = await self._ai.complete(request)
-            return parse_batch_response(response.content, entries)
+            return cast(list[list[Any]], parse_batch_response(response.content, entries))
         except Exception as exc:
             logger.warning(
                 "Batch AI review failed for %d chunks: %s",

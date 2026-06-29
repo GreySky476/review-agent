@@ -3,7 +3,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 from review_agent.repo.finding import FindingRepo
 from review_agent.repo.project import ProjectRepo
@@ -12,7 +11,7 @@ from review_agent.repo.rule import RuleRepo
 from review_agent.repo.user import UserRepo
 from review_agent.repo.webhook_event import WebhookEventRepo
 from review_agent.types.enums import FindingCategory, Platform, ReviewStatus
-from review_agent.types.orm import Base, ReviewModel
+from review_agent.types.orm import FindingModel, ReviewModel
 
 
 def make_result_mock(scalars_return: list | None = None) -> MagicMock:
@@ -25,7 +24,9 @@ def make_result_mock(scalars_return: list | None = None) -> MagicMock:
     scalar_result.one_or_none.return_value = scalars_return[0] if scalars_return else None
     result = MagicMock()
     result.scalars.return_value = scalar_result
+    result.all.return_value = scalars_return
     result.scalar_one_or_none.return_value = scalars_return[0] if scalars_return else None
+    result.scalar_one.return_value = scalars_return[0] if scalars_return else None
     return result
 
 
@@ -79,13 +80,14 @@ class TestReviewRepo:
     @pytest.mark.asyncio
     async def test_get_by_head_sha(self, db):
         repo = ReviewRepo(db)
-        await repo.get_by_head_sha("abc123")
+        await repo.get_by_head_sha("proj-1", "abc123")
         db.execute.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_create_or_get_create(self, db):
         """create_or_get 在无冲突时应创建新记录。"""
         repo = ReviewRepo(db)
+        repo.get_running_by_sha = AsyncMock(return_value=None)  # type: ignore[assignment]
         rev, is_new = await repo.create_or_get(
             project_id="p1",
             pr_number=1,
@@ -116,26 +118,24 @@ class TestReviewRepo:
         db.flush.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_create_or_get_get(self, db):
-        """create_or_get 在约束冲突时应返回已有记录（降级）。"""
-        db = AsyncMock()
-        db.flush.side_effect = IntegrityError("stmt", {}, Base())
-        existing = MagicMock(spec=ReviewModel)
-        existing.id = "existing-id"
+    async def test_create_or_get_returns_existing_when_running(self, db):
+        """create_or_get 在有进行中的评审时应返回已有记录。"""
+        running = MagicMock(spec=ReviewModel)
+        running.status = ReviewStatus.RUNNING
+        running.id = "running-id"
 
-        async def _get_by_sha(*_a, **_kw):
-            return existing
+        async def _get_running(*_a, **_kw):
+            return running
 
         repo = ReviewRepo(db)
-        repo.get_by_sha = _get_by_sha  # type: ignore[assignment]
+        repo.get_running_by_sha = _get_running  # type: ignore[assignment]
         rev, is_new = await repo.create_or_get(
             project_id="p1",
             pr_number=1,
             head_sha="abc123",
         )
         assert is_new is False
-        assert rev.id == "existing-id"
-        db.rollback.assert_awaited_once()
+        assert rev.id == "running-id"
 
 
 class TestFindingRepo:
@@ -153,26 +153,31 @@ class TestFindingRepo:
 
     @pytest.mark.asyncio
     async def test_count_by_category(self, db):
-        f1, f2 = MagicMock(), MagicMock()
-        f1.category = FindingCategory.SECURITY
-        f2.category = FindingCategory.BUG
-        db.execute = AsyncMock(return_value=make_result_mock([f1, f2]))
+        mock_a = MagicMock(spec=FindingModel)
+        mock_a.category = FindingCategory.SECURITY
+        mock_b = MagicMock(spec=FindingModel)
+        mock_b.category = FindingCategory.BUG
         repo = FindingRepo(db)
+        repo.list_by_review = AsyncMock(return_value=[mock_a, mock_b])  # type: ignore[assignment]
         result = await repo.count_by_category("review-1")
         assert result[FindingCategory.SECURITY] == 1
         assert result[FindingCategory.BUG] == 1
 
     @pytest.mark.asyncio
     async def test_count_by_severity(self, db):
-        f1, f2 = MagicMock(), MagicMock()
         from review_agent.types.enums import FindingSeverity
 
-        f1.severity = FindingSeverity.CRITICAL
-        f2.severity = FindingSeverity.WARNING
-        db.execute = AsyncMock(return_value=make_result_mock([f1, f2]))
+        mock_a = MagicMock(spec=FindingModel)
+        mock_a.severity = FindingSeverity.CRITICAL
+        mock_b = MagicMock(spec=FindingModel)
+        mock_b.severity = FindingSeverity.WARNING
+        mock_c = MagicMock(spec=FindingModel)
+        mock_c.severity = FindingSeverity.CRITICAL
         repo = FindingRepo(db)
+        repo.list_by_review = AsyncMock(return_value=[mock_a, mock_b, mock_c])  # type: ignore[assignment]
         result = await repo.count_by_severity("review-1")
-        assert len(result) == 2
+        assert result[FindingSeverity.CRITICAL] == 2
+        assert result[FindingSeverity.WARNING] == 1
 
 
 class TestRuleRepo:

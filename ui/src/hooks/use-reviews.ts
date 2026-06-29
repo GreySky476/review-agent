@@ -72,6 +72,15 @@ export function useReviewStats() {
   })
 }
 
+export interface ReviewMetrics {
+  total_prompt_tokens: number
+  total_completion_tokens: number
+  ai_call_count: number
+  pipeline_duration_ms: number | null
+  chunk_count: number
+  file_count: number
+}
+
 export interface ReviewDetail {
   id: string
   project_id: string
@@ -85,6 +94,7 @@ export interface ReviewDetail {
   create_time: string | null
   update_time: string | null
   task_id: string | null
+  summary_markdown: string | null
   statistics: {
     severity: Record<string, number>
     category: Record<string, number>
@@ -109,6 +119,7 @@ export interface ReviewDetail {
     rule_id: string | null
     is_valid: boolean
   }>
+  metrics: ReviewMetrics | null
 }
 
 export function useReviewDetail(reviewId: string) {
@@ -135,6 +146,33 @@ export interface ProjectReviewItem {
   category_breakdown: Record<string, number> | null
   duration_seconds: number | null
   create_time: string | null
+  metrics: ReviewMetrics | null
+  ai_call_failed: number
+}
+
+export interface ReviewAICall {
+  id: string
+  batch_idx: number
+  model: string
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  duration_ms: number
+  status: string
+  error_message: string | null
+  created_at: string | null
+}
+
+export function useReviewAICalls(reviewId: string) {
+  return useQuery<ReviewAICall[]>({
+    queryKey: ['review-ai-calls', reviewId],
+    queryFn: async () => {
+      const { data } = await api.get(`/reviews/${reviewId}/ai-calls`)
+      return data
+    },
+    enabled: !!reviewId,
+    staleTime: 60 * 1000,
+  })
 }
 
 interface ProjectReviewsResponse {

@@ -1,0 +1,29 @@
+# =============================================================================
+# review-agent — ConfigMap (non-sensitive application configuration)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: review-agent
+  labels:
+    app: review-agent
+    component: config
+data:
+  # -- Database -----------------------------------------------------------------
+  REVIEW_AGENT_DATABASE_URL: "postgresql+asyncpg://review:review@postgres:5432/review_agent"
+
+  # -- Redis / Message Queue ----------------------------------------------------
+  REVIEW_AGENT_REDIS_URL: "redis://redis:6379/0"
+  REVIEW_AGENT_ARQ_REDIS_URL: "redis://redis:6379/0"
+
+  # -- Observability ------------------------------------------------------------
+  REVIEW_AGENT_LOG_LEVEL: "INFO"
+
+  # -- CORS ---------------------------------------------------------------------
+  REVIEW_AGENT_CORS_ORIGINS: "http://localhost:3000,https://review-agent.example.com"
+
+  # -- Tuning -------------------------------------------------------------------
+  REVIEW_AGENT_REVIEW_MAX_CONCURRENCY: "3"
+  REVIEW_AGENT_REVIEW_SKIP_EXTENSIONS: ".md,.rst,.txt,.yaml,.yml,.lock,.toml"
+  REVIEW_AGENT_HEALTH_CHECK_INTERVAL_MINUTES: "1"

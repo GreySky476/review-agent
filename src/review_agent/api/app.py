@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -9,6 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from review_agent.api.auth import router as auth_router
 from review_agent.api.commits import router as commits_router
 from review_agent.api.dashboard import router as dashboard_router
 from review_agent.api.errors import router as errors_router
@@ -22,8 +24,11 @@ from review_agent.api.reviews import router as reviews_router
 from review_agent.api.rules import router as rules_router
 from review_agent.api.webhook import router as webhook_router
 from review_agent.api.webhook_events import router as webhook_events_router
+from review_agent.api.webhook_gitee import gitee_router
+from review_agent.api.webhook_gitlab import gitlab_router
 from review_agent.config.logging import setup_logging, setup_opentelemetry
-from review_agent.config.settings import get_settings
+from review_agent.config.settings import get_settings, validate_production_settings
+from review_agent.service.error_logger import drain_error_logger
 from review_agent.service.scheduler import (
     start_health_check_scheduler,
     start_recovery_scheduler,
@@ -37,19 +42,23 @@ from review_agent.types.exceptions import (
     WebhookValidationError,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期管理。
 
-    startup: 启动后台健康检查任务。
-    shutdown: 清理资源。
+    startup: 启动后台健康检查任务 + 配置验证。
+    shutdown: 排空错误日志缓冲区、清理资源。
     """
     settings = get_settings()
+    validate_production_settings(settings)
     start_health_check_scheduler(interval_minutes=settings.health_check_interval_minutes)
     start_sync_scheduler(interval_minutes=5)
     start_recovery_scheduler(interval_minutes=5)
     yield
+    await drain_error_logger()
 
 
 def create_app() -> FastAPI:
@@ -74,7 +83,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -88,7 +97,10 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(auth_router, prefix="/api/v1")
     app.include_router(webhook_router, prefix="/webhook")
+    app.include_router(gitlab_router, prefix="/webhook")
+    app.include_router(gitee_router, prefix="/webhook")
     app.include_router(dashboard_router, prefix="/api/v1")
     app.include_router(projects_router, prefix="/api/v1")
     app.include_router(reviews_router, prefix="/api/v1")
@@ -122,6 +134,7 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(_request: Request, _exc: Exception) -> JSONResponse:
+        logger.exception("Unhandled exception")
         return JSONResponse(
             status_code=500,
             content={

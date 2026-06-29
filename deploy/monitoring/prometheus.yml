@@ -1,0 +1,78 @@
+# =============================================================================
+# Prometheus Configuration — review-agent
+# =============================================================================
+# This config scrapes metrics from review-agent services and infrastructure
+# exporters. Metrics are auto-instrumented via OpenTelemetry.
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+# -----------------------------------------------------------------------------
+# Alerting
+# -----------------------------------------------------------------------------
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:9093"
+
+# -----------------------------------------------------------------------------
+# Rule files
+# -----------------------------------------------------------------------------
+rule_files:
+  - "rules.yml"
+
+# -----------------------------------------------------------------------------
+# Scrape configs
+# -----------------------------------------------------------------------------
+scrape_configs:
+  # -- Prometheus self-monitoring --------------------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - "localhost:9090"
+
+  # -- review-agent API ------------------------------------------------------------
+  - job_name: review-agent-api
+    scrape_interval: 10s
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "api:8000"
+        labels:
+          service: review-agent-api
+          component: api
+
+  # -- review-agent Worker ---------------------------------------------------------
+  - job_name: review-agent-worker
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "worker:8001"
+        labels:
+          service: review-agent-worker
+          component: worker
+
+  # -- PostgreSQL Exporter (optional) ----------------------------------------------
+  - job_name: postgres-exporter
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "postgres-exporter:9187"
+        labels:
+          service: postgres
+          component: database
+
+  # -- Redis Exporter (optional) ---------------------------------------------------
+  - job_name: redis-exporter
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "redis-exporter:9121"
+        labels:
+          service: redis
+          component: cache

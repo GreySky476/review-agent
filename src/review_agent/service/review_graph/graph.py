@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from typing import Any
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from review_agent.service.ai.base import AIProvider
 from review_agent.service.git.base import GitProvider
@@ -35,7 +37,7 @@ logger = logging.getLogger(__name__)
 def _with_git(
     node_fn: Callable[..., Any],
     git_provider: GitProvider,
-) -> Callable[[ReviewState], Any]:
+) -> Callable[[ReviewState], Coroutine[Any, Any, Any]]:
     """注入 git_provider 的包装器。
 
     node_fn 签名: (state, git_provider) → dict
@@ -52,7 +54,7 @@ def _with_ai(
     node_fn: Callable[..., Any],
     ai_provider: AIProvider | None,
     knowledge_base: Any = None,
-) -> Callable[[ReviewState], Any]:
+) -> Callable[[ReviewState], Coroutine[Any, Any, Any]]:
     """注入 ai_provider 和 knowledge_base 的包装器。"""
 
     async def wrapper(state: ReviewState) -> Any:
@@ -66,8 +68,8 @@ def build_review_graph(
     ai_provider: AIProvider | None = None,
     knowledge_base: Any = None,
     *,
-    checkpointer: object | None = None,
-) -> StateGraph:
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
+) -> CompiledStateGraph[ReviewState, None, ReviewState, ReviewState]:
     """构建 LangGraph 评审流水线。
 
     Args:
@@ -79,11 +81,11 @@ def build_review_graph(
     Returns:
         已编译可调用的 StateGraph。
     """
-    builder = StateGraph(ReviewState)
+    builder: StateGraph[ReviewState, None, ReviewState, ReviewState] = StateGraph(ReviewState)
 
     # ─── 注册节点 ───
     builder.add_node("filter_files", filter_files)
-    builder.add_node("fetch_and_chunk", _with_git(fetch_and_chunk, git_provider))
+    builder.add_node("fetch_and_chunk", _with_git(fetch_and_chunk, git_provider))  # type: ignore[call-overload]
 
     # 五维度规则检查（合并为一个 node，避免 Send reducer 问题）
     builder.add_node("run_all_rules", run_all_rules)
@@ -92,7 +94,7 @@ def build_review_graph(
     builder.add_node("resolve_incremental", resolve_incremental)
 
     # AI 与结构评审（均为批量 node，避免 Send reducer 问题）
-    builder.add_node("ai_batch", _with_ai(run_ai_batch, ai_provider, knowledge_base))
+    builder.add_node("ai_batch", _with_ai(run_ai_batch, ai_provider, knowledge_base))  # type: ignore[call-overload]
     builder.add_node("structural_batch", structural_review_chunk)
     builder.add_node("dispatch_chunks", _pass_through)
 

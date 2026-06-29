@@ -1,0 +1,60 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "shell": "/bin/zsh",
+  "model": "deepseek/deepseek-v4-flash",
+  "agent": {
+    "plan": {
+      "model": "deepseek/deepseek-v4-flash"
+    },
+    "build": {
+      "model": "deepseek/deepseek-v4-flash"
+    }
+  },
+  "instructions": ["AGENTS.md", "CLAUDE.md"],
+  "share": "disabled",
+  "autoupdate": "notify",
+
+  "permission": {
+    "edit": "allow",
+    "bash": {
+      "git commit *": "ask",
+      "git push *": "deny",
+      "rm -rf *": "deny",
+      "docker compose *": "ask",
+      "*": "allow"
+    },
+    "webfetch": "allow",
+    "websearch": "allow",
+    "external_directory": {
+      "~/.config/opencode/**": "allow",
+      "/tmp/**": "allow",
+      "/var/folders/**": "allow",
+      "*": "deny"
+    }
+  },
+
+  "references": {
+    "docs": {
+      "path": "docs",
+      "description": "项目文档：架构、编码规范、测试策略、API 约定、功能设计等"
+    }
+  },
+
+  "formatter": {
+    "python": {
+      "command": ["ruff", "format", "--stdin-filename", "$FILE"],
+      "extensions": [".py"]
+    }
+  },
+
+  "lsp": {
+    "pyright": {
+      "command": ["pyright-langserver", "--stdio"],
+      "extensions": [".py"]
+    }
+  },
+
+  "experimental": {
+    "primary_tools": ["task", "todowrite"]
+  }
+}

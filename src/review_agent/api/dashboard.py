@@ -11,13 +11,18 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from review_agent.config.database import get_session
-from review_agent.repo.platform_health import PlatformHealthRepo
-from review_agent.repo.project import ProjectRepo
-from review_agent.repo.quality_snapshot import QualitySnapshotRepo
+from review_agent.service.dashboard_handler import (
+    count_projects as _count_projects,
+)
+from review_agent.service.dashboard_handler import (
+    list_platform_health,
+    list_projects_all,
+    list_quality_snapshots,
+)
 from review_agent.types.models import DashboardStats, EnterpriseDashboard
 from review_agent.types.orm import FindingModel, ProjectModel, ReviewErrorLog, ReviewModel
 
-router = APIRouter(tags=["dashboard"])
+router = APIRouter(tags=["dashboard"])  # TODO: 登录页面未就绪，暂时不启用 JWT 认证
 
 
 @router.get("/dashboard/stats")
@@ -25,8 +30,7 @@ async def dashboard_stats(
     db: AsyncSession = Depends(get_session),
 ) -> DashboardStats:
     """获取仪表盘统计信息。"""
-    project_repo = ProjectRepo(db)
-    total_projects = await project_repo.count()
+    total_projects = await _count_projects(db)
 
     today_start = sa.func.current_date()
     today_count_result = await db.execute(
@@ -79,16 +83,12 @@ async def quality_trends(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """获取质量趋势数据（折线图）。"""
-    repo = QualitySnapshotRepo(db)
-
-    start: Any = start_date
-    end: Any = end_date
-
-    snapshots = await repo.list_by_project_and_period(
+    snapshots = await list_quality_snapshots(
+        db,
         project_id=project_id,
         period=period,
-        start_date=start,
-        end_date=end,
+        start_date=start_date,
+        end_date=end_date,
     )
 
     return {
@@ -121,8 +121,7 @@ async def enterprise_dashboard(
     two_weeks_ago = now - timedelta(days=14)
 
     # 项目计数
-    project_repo = ProjectRepo(db)
-    total_projects = await project_repo.count()
+    total_projects = await _count_projects(db)
 
     # 本周 vs 上周评审统计
     this_week_total = await db.execute(
@@ -217,8 +216,7 @@ async def enterprise_dashboard(
     top_findings = [{"category": row[0], "count": row[1]} for row in top_findings_rows.all()]
 
     # 平台健康
-    health_repo = PlatformHealthRepo(db)
-    platform_list = await health_repo.list_all()
+    platform_list = await list_platform_health(db)
     platform_health: dict[str, str] = {}
     for p in platform_list:
         platform_health[p["platform"]] = p["status"]
@@ -252,8 +250,7 @@ async def project_health(
     week_ago = now - timedelta(days=7)
     two_weeks_ago = now - timedelta(days=14)
 
-    project_repo = ProjectRepo(db)
-    projects = await project_repo.list(limit=100)
+    projects = await list_projects_all(db, limit=100)
 
     items: list[dict[str, Any]] = []
     for p in projects:

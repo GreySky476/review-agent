@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import ipaddress
 import logging
 import time
@@ -57,8 +59,8 @@ class GitHubIPChecker:
         try:
             settings = get_settings()
             headers: dict[str, str] = {"User-Agent": "review-agent"}
-            if settings.github_token:
-                headers["Authorization"] = f"Bearer {settings.github_token}"
+            if settings.github_token.get_secret_value():
+                headers["Authorization"] = f"Bearer {settings.github_token.get_secret_value()}"
 
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(_GITHUB_META_URL, headers=headers)
@@ -341,3 +343,45 @@ def check_payload_size(content_length: int | None, raw_body: bytes | None = None
         return False
 
     return True
+
+
+# ── 签名验证 ────────────────────────────────────────────────
+
+
+def verify_github_signature(payload: bytes, signature: str, secret: str) -> bool:
+    """验证 GitHub Webhook 签名。
+
+    使用 HMAC-SHA256 计算哈希并与请求头中的签名对比。
+
+    Args:
+        payload: 原始请求体 bytes。
+        signature: X-Hub-Signature-256 header 的值（如 "sha256=xxx"）。
+        secret: 项目配置的 webhook_secret。
+
+    Returns:
+        签名匹配返回 True，否则返回 False。
+    """
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        msg=payload,
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(f"sha256={expected}", signature)
+
+
+# ── 平台 Token 验证 ────────────────────────────────────────
+
+
+def verify_platform_token(secret: str, token: str) -> bool:
+    """验证平台 Webhook Token（用于 GitLab/Gitee 简单令牌验证）。
+
+    使用 hmac.compare_digest 进行时间安全比较，防止时序攻击。
+
+    Args:
+        secret: 项目配置的 webhook_secret。
+        token: 请求头中的 token 值（如 ``X-Gitlab-Token``）。
+
+    Returns:
+        token 匹配返回 True，否则返回 False。
+    """
+    return hmac.compare_digest(secret, token)

@@ -18,12 +18,34 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from review_agent.api.dependencies.auth import require_role
 from review_agent.config.database import get_session
-from review_agent.repo.rule import RuleRepo
 from review_agent.service.embedding import EmbeddingService
+from review_agent.service.rule_handler import (
+    count_rules as _count_rules,
+)
+from review_agent.service.rule_handler import (
+    create_rule as _create_rule_handler,
+)
+from review_agent.service.rule_handler import (
+    delete_rule as _delete_rule_handler,
+)
+from review_agent.service.rule_handler import (
+    get_active_rule as _get_active_rule,
+)
+from review_agent.service.rule_handler import (
+    list_active_rules as _list_active_rules,
+)
+from review_agent.service.rule_handler import (
+    list_rules as _list_rules_query,
+)
+from review_agent.service.rule_handler import (
+    update_rule as _update_rule_handler,
+)
+from review_agent.types.enums import UserRole
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["rules"])
+router = APIRouter(tags=["rules"])  # TODO: 登录页面未就绪，暂时不启用 JWT 认证
 
 
 @router.get("/rules")
@@ -36,7 +58,6 @@ async def list_rules(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """获取评审规则列表。"""
-    repo = RuleRepo(db)
     filters: dict[str, Any] = {}
     if language:
         filters["languages"] = language
@@ -45,12 +66,13 @@ async def list_rules(
     if is_active is not None:
         filters["is_active"] = is_active
 
-    items = await repo.list(
+    items = await _list_rules_query(
+        db,
         skip=(page - 1) * page_size,
         limit=page_size,
         filters=filters,
     )
-    total = await repo.count(filters=filters)
+    total = await _count_rules(db, filters=filters)
 
     return {
         "items": [
@@ -75,14 +97,16 @@ async def list_rules(
     }
 
 
-@router.post("/rules", status_code=201)
+@router.post(
+    "/rules", status_code=201, dependencies=[Depends(require_role(UserRole.PROJECT_ADMIN))]
+)
 async def create_rule(
     body: dict[str, Any],
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """创建评审规则。"""
-    repo = RuleRepo(db)
-    rule = await repo.create(
+    rule = await _create_rule_handler(
+        db,
         name=body.get("name", ""),
         content=body.get("content", ""),
         category=body.get("category", "style"),
@@ -96,15 +120,14 @@ async def create_rule(
     }
 
 
-@router.patch("/rules/{rule_id}")
+@router.patch("/rules/{rule_id}", dependencies=[Depends(require_role(UserRole.PROJECT_ADMIN))])
 async def update_rule(
     rule_id: str,
     body: dict[str, Any],
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """更新评审规则。"""
-    repo = RuleRepo(db)
-    rule = await repo.get_active(rule_id)
+    rule = await _get_active_rule(db, rule_id)
     if rule is None:
         return {"id": rule_id, "status": "not_found"}
 
@@ -113,25 +136,26 @@ async def update_rule(
         if field in body:
             update_fields[field] = body[field]
 
-    await repo.update(rule_id, **update_fields)
+    await _update_rule_handler(db, rule_id, **update_fields)
     # 规则内容变更后清除缓存
     EmbeddingService().cache_invalidate(rule_id)
     return {"id": rule_id, "status": "updated"}
 
 
-@router.delete("/rules/{rule_id}")
+@router.delete("/rules/{rule_id}", dependencies=[Depends(require_role(UserRole.PROJECT_ADMIN))])
 async def delete_rule(
     rule_id: str,
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """删除评审规则（软删除）。"""
-    repo = RuleRepo(db)
-    await repo.soft_delete(rule_id)
+    await _delete_rule_handler(db, rule_id)
     EmbeddingService().cache_invalidate(rule_id)
     return {"id": rule_id, "status": "deleted"}
 
 
-@router.post("/rules/{rule_id}/re-embed")
+@router.post(
+    "/rules/{rule_id}/re-embed", dependencies=[Depends(require_role(UserRole.PROJECT_ADMIN))]
+)
 async def re_embed_rule(
     rule_id: str,
     db: AsyncSession = Depends(get_session),
@@ -140,8 +164,7 @@ async def re_embed_rule(
 
     调用外部嵌入 API 生成向量，持久化到数据库。
     """
-    repo = RuleRepo(db)
-    rule = await repo.get_active(rule_id)
+    rule = await _get_active_rule(db, rule_id)
     if rule is None:
         raise HTTPException(status_code=404, detail="规则不存在")
 
@@ -150,7 +173,7 @@ async def re_embed_rule(
     vector = await embedder.embed(embed_text)
     vector_json = str(vector)
 
-    await repo.update(rule_id, embedding=vector_json)
+    await _update_rule_handler(db, rule_id, embedding=vector_json)
     embedder.cache_set(rule_id, vector)
 
     return {
@@ -160,13 +183,12 @@ async def re_embed_rule(
     }
 
 
-@router.post("/rules/re-embed-all")
+@router.post("/rules/re-embed-all", dependencies=[Depends(require_role(UserRole.PROJECT_ADMIN))])
 async def re_embed_all_rules(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """重新计算所有活跃规则的嵌入向量。"""
-    repo = RuleRepo(db)
-    rules = await repo.list_active()
+    rules = await _list_active_rules(db)
     embedder = EmbeddingService()
     updated = 0
 
@@ -175,7 +197,7 @@ async def re_embed_all_rules(
             embed_text = f"{rule.name}: {rule.content}"
             vector = await embedder.embed(embed_text)
             vector_json = str(vector)
-            await repo.update(rule.id, embedding=vector_json)
+            await _update_rule_handler(db, rule.id, embedding=vector_json)
             embedder.cache_set(rule.id, vector)
             updated += 1
         except Exception as exc:
@@ -188,7 +210,9 @@ async def re_embed_all_rules(
     }
 
 
-@router.post("/rules/{rule_id}/test-embedding")
+@router.post(
+    "/rules/{rule_id}/test-embedding", dependencies=[Depends(require_role(UserRole.PROJECT_ADMIN))]
+)
 async def test_rule_embedding(
     rule_id: str,
     body: dict[str, Any],
@@ -199,8 +223,7 @@ async def test_rule_embedding(
     Request body:
         ``{"code": "def foo():\\n    pass"}``
     """
-    repo = RuleRepo(db)
-    rule = await repo.get_active(rule_id)
+    rule = await _get_active_rule(db, rule_id)
     if rule is None:
         raise HTTPException(status_code=404, detail="规则不存在")
 

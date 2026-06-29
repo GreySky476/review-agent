@@ -1,0 +1,79 @@
+# =============================================================================
+# review-agent — Worker Deployment + HPA
+# =============================================================================
+# The worker processes AI review tasks from the ARQ Redis queue.
+# It is a long-running process with no HTTP probes.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: review-agent
+  labels:
+    app: review-agent
+    component: worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: review-agent
+      component: worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: review-agent
+        component: worker
+    spec:
+      terminationGracePeriodSeconds: 60  # allow in-flight review tasks to finish
+      containers:
+        - name: worker
+          image: "review-agent:latest"
+          imagePullPolicy: IfNotPresent
+          command:
+            - "uv"
+            - "run"
+            - "arq"
+            - "review_agent.service.queue.WorkerSettings"
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secret
+          resources:
+            requests:
+              cpu: "1"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          # No readiness/liveness probes — the worker is a long-running
+          # background processor that does not expose an HTTP endpoint.
+          # Health is monitored via queue depth metrics (Prometheus).
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+  namespace: review-agent
+  labels:
+    app: review-agent
+    component: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80

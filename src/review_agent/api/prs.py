@@ -11,18 +11,38 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from review_agent.config.database import get_session
-from review_agent.repo.commit import CommitRepo
-from review_agent.repo.finding import FindingRepo
-from review_agent.repo.project import ProjectRepo
-from review_agent.repo.pull_request import PullRequestRepo
-from review_agent.repo.review import ReviewRepo
+from review_agent.config.settings import get_settings
 from review_agent.service.git.github_provider import GitHubProvider
+from review_agent.service.pr_handler import (
+    bulk_upsert_commits,
+    get_latest_pr_review,
+    get_pr_by_number,
+    get_review_by_head_sha,
+    get_review_by_project_pr,
+    list_commits_by_pr,
+    list_reviews_by_pr,
+)
+from review_agent.service.pr_handler import (
+    count_prs as _count_prs,
+)
+from review_agent.service.pr_handler import (
+    create_review as _create_review_handler,
+)
+from review_agent.service.pr_handler import (
+    get_project as _get_project,
+)
+from review_agent.service.pr_handler import (
+    list_findings_by_review as _list_findings_by_review,
+)
+from review_agent.service.pr_handler import (
+    list_prs as _list_prs_query,
+)
 from review_agent.service.queue import enqueue_pr_review
 from review_agent.types.enums import ReviewStatus
 from review_agent.types.orm import ReviewModel
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["pull-requests"])
+router = APIRouter(tags=["pull-requests"])  # TODO: 登录页面未就绪，暂时不启用 JWT 认证
 
 
 @router.get("/projects/{project_id}/pull-requests")
@@ -34,25 +54,20 @@ async def list_pull_requests(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """获取项目的 PR 列表（含关联的评审状态）。"""
-    pr_repo = PullRequestRepo(db)
-    review_repo = ReviewRepo(db)
-
-    prs = await pr_repo.list_by_project(
+    prs = await _list_prs_query(
+        db,
         project_id,
         state=state,
         skip=(page - 1) * page_size,
         limit=page_size,
     )
 
-    # Count total (needs separate query since list_by_project doesn't return count)
-    count_filters: dict[str, Any] = {"project_id": project_id}
-    if state:
-        count_filters["state"] = state
-    total = await pr_repo.count(filters=count_filters)
+    # Count total
+    total = await _count_prs(db, project_id, state=state)
 
     items = []
     for pr in prs:
-        review = await review_repo.get_by_project_pr(project_id, pr.pr_number)
+        review = await get_review_by_project_pr(db, project_id, pr.pr_number)
         items.append(
             {
                 "pr_number": pr.pr_number,
@@ -81,10 +96,7 @@ async def get_pull_request_detail(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """获取 PR 详情（含关联的 Review 和 Findings）。"""
-    pr_repo = PullRequestRepo(db)
-    review_repo = ReviewRepo(db)
-
-    pr = await pr_repo.get_by_pr_number(project_id, pr_number)
+    pr = await get_pr_by_number(db, project_id, pr_number)
     if pr is None:
         return {
             "pull_request": None,
@@ -93,7 +105,7 @@ async def get_pull_request_detail(
         }
 
     # 查询 PR 所有 review（按时间升序）
-    all_reviews = await review_repo.list_by_pr(project_id, pr_number)
+    all_reviews = await list_reviews_by_pr(db, project_id, pr_number)
 
     # 构建 review_by_sha 映射（DB 路径和 GitHub 回退路径共用）
     review_by_sha: dict[str, Any] = {}
@@ -109,7 +121,7 @@ async def get_pull_request_detail(
     # 从 commits 表读取 commit 数据（DB 优先，空时回退到 GitHub API）
     commits_data: list[dict[str, Any]] = []
     try:
-        commit_records = await CommitRepo(db).list_by_pr(project_id, pr_number)
+        commit_records = await list_commits_by_pr(db, project_id, pr_number)
         if commit_records:
             commit_shas = [c.sha for c in commit_records]
 
@@ -160,7 +172,7 @@ async def get_pull_request_detail(
                 project_id,
             )
             try:
-                project = await ProjectRepo(db).get(project_id)
+                project = await _get_project(db, project_id)
                 if project and project.platform == "github":
                     repo_name = _extract_repo_name(project.repo_url)
                     if repo_name:
@@ -257,8 +269,7 @@ async def sync_pull_request_commits(
     logger.info("Manual sync triggered: project=%s pr=#%d", project_id, pr_number)
 
     # 1. 查找项目
-    project_repo = ProjectRepo(db)
-    project = await project_repo.get(project_id)
+    project = await _get_project(db, project_id)
     if not project:
         logger.warning("Project not found: %s", project_id)
         return JSONResponse({"status": "rejected", "reason": "project_not_found"}, status_code=404)
@@ -293,8 +304,7 @@ async def sync_pull_request_commits(
 
     # 3. bulk_upsert 到 commits 表
     try:
-        commit_repo = CommitRepo(db)
-        await commit_repo.bulk_upsert(project_id, pr_number, pr_commits)
+        await bulk_upsert_commits(db, project_id, pr_number, pr_commits)
         await db.commit()
         logger.info(
             "Synced %d commits for PR #%d in project %s",
@@ -312,8 +322,7 @@ async def sync_pull_request_commits(
     # 4. 读取最新数据并合并 review 状态返回
     commits_data: list[dict[str, Any]] = []
     try:
-        review_repo = ReviewRepo(db)
-        all_reviews = await review_repo.list_by_pr(project_id, pr_number)
+        all_reviews = await list_reviews_by_pr(db, project_id, pr_number)
         commit_shas = [c["sha"] for c in pr_commits]
 
         extra_reviews_result = await db.execute(
@@ -383,8 +392,7 @@ async def trigger_pr_review(
     )
 
     # 1. 查找项目
-    project_repo = ProjectRepo(db)
-    project = await project_repo.get(project_id)
+    project = await _get_project(db, project_id)
     if not project:
         logger.warning("Project not found: %s", project_id)
         return JSONResponse({"status": "rejected", "reason": "project_not_found"}, status_code=404)
@@ -396,6 +404,22 @@ async def trigger_pr_review(
 
     # 2. 从 GitHub 获取 PR 最新 head SHA
     try:
+        settings = get_settings()
+        if not settings.github_token.get_secret_value():
+            logger.warning(
+                "GitHub token not configured — cannot fetch PR info for %s#%d",
+                repo_name,
+                pr_number,
+            )
+            return JSONResponse(
+                {
+                    "status": "rejected",
+                    "reason": "github_token_not_configured",
+                    "message": "请先配置 REVIEW_AGENT_GITHUB_TOKEN 环境变量",
+                },
+                status_code=200,
+            )
+
         git = GitHubProvider()
         pr_info = await git.get_pr_info(repo_name, pr_number)
         pr_head_sha = pr_info.head_sha
@@ -408,53 +432,28 @@ async def trigger_pr_review(
     except Exception as exc:
         logger.warning("Failed to fetch PR info for %s#%d: %s", repo_name, pr_number, exc)
         return JSONResponse(
-            {"status": "rejected", "reason": f"github_api_failed: {exc}"},
+            {"status": "rejected", "reason": "github_api_failed", "message": str(exc)},
             status_code=502,
         )
 
-    # 3. SHA 去重检查
-    force_reuse_review = False
+    # 3. 并发保护：同一 SHA 有进行中的评审则拒绝
+    project_id_for_sha = project.id
     try:
-        review_repo_instance = ReviewRepo(db)
-        existing_shas = await review_repo_instance.get_by_head_sha(pr_head_sha)
-        if existing_shas:
-            if existing_shas.status in (ReviewStatus.COMPLETED, ReviewStatus.COMPLETED_WITH_ERRORS):
-                if not force:
-                    logger.info(
-                        "SHA %s for PR #%d already has completed review %s, skipping"
-                        " (use force=true to override)",
-                        pr_head_sha[:8],
-                        pr_number,
-                        existing_shas.id[:8],
-                    )
-                    return JSONResponse(
-                        {"status": "skipped", "reason": "sha_unchanged"},
-                        status_code=200,
-                    )
-            elif existing_shas.status in (ReviewStatus.PENDING, ReviewStatus.RUNNING):
-                if not force:
-                    logger.info(
-                        "SHA %s for PR #%d review in progress, rejecting",
-                        pr_head_sha[:8],
-                        pr_number,
-                    )
-                    return JSONResponse(
-                        {
-                            "status": "rejected",
-                            "reason": "review_in_progress",
-                            "review_id": existing_shas.id,
-                        },
-                        status_code=409,
-                    )
-                # force=true: 复用现有 review 记录，清空旧 findings
-                logger.info("Force re-review: reusing existing review %s", existing_shas.id[:8])
-                # 更新状态为 PENDING，允许重新入队
-                existing_shas.status = ReviewStatus.PENDING
-                existing_shas.score = None
-                existing_shas.findings_count = 0
-                existing_shas.error_message = None
-                existing_shas.task_id = None
-                force_reuse_review = True
+        running = await get_review_by_head_sha(db, project_id_for_sha, pr_head_sha)
+        if running and running.status in (ReviewStatus.PENDING, ReviewStatus.RUNNING):
+            logger.info(
+                "SHA %s for PR #%d review in progress, rejecting",
+                pr_head_sha[:8],
+                pr_number,
+            )
+            return JSONResponse(
+                {
+                    "status": "rejected",
+                    "reason": "review_in_progress",
+                    "review_id": running.id,
+                },
+                status_code=409,
+            )
     except Exception:
         logger.debug("Failed to check SHA dedup: %s", exc_info=True)
 
@@ -492,9 +491,9 @@ async def trigger_pr_review(
     previous_review_id: str | None = None
     last_reviewed_sha: str | None = None
     previous_file_paths: list[str] = []
-    previous_reviewed_files: list[dict] = []
+    previous_reviewed_files: list[dict[str, Any]] = []
     try:
-        prev_review = await ReviewRepo(db).get_latest_completed_by_pr(project_id, pr_number)
+        prev_review = await get_latest_pr_review(db, project_id, pr_number)
         if prev_review:
             previous_review_id = prev_review.id
             last_reviewed_sha = prev_review.head_sha
@@ -504,7 +503,7 @@ async def trigger_pr_review(
                 previous_file_paths = [f["path"] for f in prev_review.reviewed_files if "path" in f]
             else:
                 # 兼容旧数据：从 findings 推导
-                prev_findings = await FindingRepo(db).list_by_review(prev_review.id)
+                prev_findings = await _list_findings_by_review(db, prev_review.id)
                 previous_file_paths = list({f.file_path for f in prev_findings})
                 previous_reviewed_files = [
                     {"path": f.file_path, "max_severity": f.severity} for f in prev_findings
@@ -518,21 +517,17 @@ async def trigger_pr_review(
     except Exception:
         logger.debug("Failed to load previous review context: %s", exc_info=True)
 
-    # 6. 创建评审记录（force 路径已在第 3 步复用现有 record）
-    review_repo = ReviewRepo(db)
-    if not force_reuse_review:
-        review = await review_repo.create(
-            project_id=project_id,
-            pr_number=pr_number,
-            pr_title=f"PR #{pr_number}",
-            head_sha=pr_head_sha,
-            status=ReviewStatus.PENDING,
-            task_id=None,
-        )
-        logger.info("Review record created: id=%s pr=#%d", review.id, pr_number)
-    else:
-        review = existing_shas
-        logger.info("Review record reused: id=%s pr=#%d (force mode)", review.id, pr_number)
+    # 6. 创建评审记录
+    review = await _create_review_handler(
+        db,
+        project_id=project_id,
+        pr_number=pr_number,
+        pr_title=f"PR #{pr_number}",
+        head_sha=pr_head_sha,
+        status=ReviewStatus.PENDING,
+        task_id=None,
+    )
+    logger.info("Review record created: id=%s pr=#%d", review.id, pr_number)
 
     # 7. 加入评审队列（PR 增量通道，含 reviewed_files）
     task_id = await enqueue_pr_review(

@@ -52,7 +52,7 @@ class PlatformHealthRepo(BaseRepository[PlatformHealthModel]):  # type: ignore[m
             PlatformHealthModel.platform == platform,
         )
         result = await self._db.execute(stmt)
-        return result.scalar_one_or_none()  # type: ignore[no-any-return]
+        return result.scalar_one_or_none()
 
     async def list_all(self) -> list[dict[str, Any]]:
         """获取所有平台状态列表。"""

@@ -12,24 +12,25 @@ from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from review_agent.api.webhook_helpers import (
+from review_agent.config.database import get_session
+from review_agent.config.settings import get_settings
+from review_agent.service.error_logger import log_error
+from review_agent.service.webhook_handler import (
     ensure_project_connected,
     extract_pr_number,
     extract_repo_full_name,
+    get_project_by_platform_repo,
+    get_review_branches_for_project,
     handle_push_event,
     parse_event_action,
     sync_pull_request,
     trigger_pr_review,
-    verify_github_signature,
 )
-from review_agent.config.database import get_session
-from review_agent.config.settings import get_settings
-from review_agent.repo.project import ProjectRepo
-from review_agent.service.error_logger import log_error
 from review_agent.service.webhook_security import (
     check_payload_size,
     check_rate_limit,
     is_github_request,
+    verify_github_signature,
 )
 from review_agent.types.enums import EventAction, Platform
 
@@ -109,8 +110,7 @@ async def github_webhook(
     if x_hub_signature_256 and x_github_event in ("push", "pull_request"):
         repo_full_name = extract_repo_full_name(Platform.GITHUB, payload)
         if repo_full_name:
-            repo_url = f"https://github.com/{repo_full_name}"
-            project = await ProjectRepo(db).get_by_platform_repo(Platform.GITHUB, repo_url)
+            project = await get_project_by_platform_repo(db, Platform.GITHUB, repo_full_name)
             if project and project.webhook_secret:
                 if not verify_github_signature(raw, x_hub_signature_256, project.webhook_secret):
                     logger.warning(
@@ -237,8 +237,7 @@ async def github_webhook(
         trigger_actions = {EventAction.OPENED, EventAction.SYNCHRONIZE, EventAction.REOPENED}
         if project_id and parsed_action in trigger_actions:
             pr_base_ref = pr_data.get("base", {}).get("ref")
-            project_repo = ProjectRepo(db)
-            allowed = await project_repo.get_review_branches(project_id)
+            allowed = await get_review_branches_for_project(db, project_id)
             if pr_base_ref and not any(fnmatch.fnmatch(pr_base_ref, p) for p in allowed):
                 logger.info(
                     "Webhook[%s] branch skipped: base='%s' not in %s",

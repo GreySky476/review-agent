@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, cast
 
 from review_agent.service.ai.types import BatchReviewEntry
 from review_agent.service.chunking import CodeChunk, adjust_line_number
@@ -151,7 +151,7 @@ def adjust_batch_line(entry: BatchReviewEntry, line: int | None) -> int | None:
     """调整 BatchReviewEntry 的行号（同 adjust_line_number 逻辑）。"""
     if line is None:
         return None
-    return entry.start_line + line - 1
+    return cast(int, entry.start_line + line - 1)
 
 
 def parse_batch_response(

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -13,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 from review_agent.config.settings import get_settings
 from review_agent.service.standards import detect_language
 from review_agent.types.enums import ChunkPath
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from review_agent.service.ai.base import AIProvider
@@ -254,6 +257,19 @@ async def chunk_file(
             )
         )
 
+    detail_count = sum(1 for c in chunks if c.path == ChunkPath.DETAILED_REVIEW)
+    structural_count = sum(1 for c in chunks if c.path == ChunkPath.STRUCTURAL_REVIEW)
+    logger.info(
+        "chunk_file: %s lang=%s parser=%s funcs=%d chunks=%d detail=%d structural=%d",
+        file_path,
+        lang,
+        "ast" if parser else "regex",
+        len(functions),
+        len(chunks),
+        detail_count,
+        structural_count,
+    )
+
     # 如果没有提取到函数，把整个文件作为一个块
     if not chunks:
         tokens = _estimate_tokens(source_code)
@@ -271,6 +287,13 @@ async def chunk_file(
                     else ChunkPath.STRUCTURAL_REVIEW
                 ),
             )
+        )
+        logger.info(
+            "chunk_file: %s — no functions, single chunk (%d lines, %d tok, %s)",
+            file_path,
+            len(source_code.split("\n")),
+            tokens,
+            "detail" if tokens <= oversized_min else "structural",
         )
 
     return chunks

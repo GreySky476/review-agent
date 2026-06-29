@@ -9,9 +9,10 @@ export const api = axios.create({
 api.interceptors.response.use(
   (res) => res,
   (error) => {
-    if (error.response?.status === 401) {
-      window.location.href = '/login'
-    }
+    // TODO: 登录页面未就绪，暂时不重定向
+    // if (error.response?.status === 401) {
+    //   window.location.href = '/login'
+    // }
     return Promise.reject(error)
   },
 )

@@ -1,0 +1,29 @@
+# =============================================================================
+# review-agent — Kustomize Overlay
+# =============================================================================
+# Apply with: kubectl apply -k deploy/k8s/
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namePrefix: "review-agent-"
+
+namespace: review-agent
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.yaml
+  - postgres.yaml
+  - redis.yaml
+  - api.yaml
+  - worker.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: review-agent
+  app.kubernetes.io/managed-by: kustomize
+
+# Note: namePrefix "review-agent-" is applied to all resource names.
+# This means "postgres" becomes "review-agent-postgres", "api" becomes
+# "review-agent-api", etc.  The namespace resource itself is exempt from
+# name prefixing by Kustomize convention.

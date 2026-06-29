@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from review_agent.config.database import get_session
-from review_agent.repo.platform_health import PlatformHealthRepo
-from review_agent.service.health import run_all_checks
+from review_agent.service.health import (
+    get_platform_health_by_platform,
+    get_platform_health_list,
+    run_all_checks,
+)
 from review_agent.types.enums import Platform
 
 router = APIRouter(tags=["health"])
@@ -20,8 +23,7 @@ async def platform_health_list(
     db: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
     """获取所有平台的连通性状态。"""
-    repo = PlatformHealthRepo(db)
-    return await repo.list_all()
+    return cast(list[dict[str, Any]], await get_platform_health_list(db))
 
 
 @router.get("/health/platforms/{platform}")
@@ -34,17 +36,10 @@ async def platform_health_detail(
         p = Platform(platform)
     except ValueError:
         return {"platform": platform, "status": "unknown"}
-    repo = PlatformHealthRepo(db)
-    row = await repo.get_by_platform(p)
-    if row is None:
+    result = await get_platform_health_by_platform(db, p)
+    if result is None:
         return {"platform": platform, "status": "pending", "latency_ms": 0, "error_message": None}
-    return {
-        "platform": row.platform,
-        "status": row.status,
-        "latency_ms": row.latency_ms,
-        "error_message": row.error_message,
-        "last_checked_at": row.update_time.isoformat() if row.update_time else None,
-    }
+    return cast(dict[str, Any], result)
 
 
 @router.post("/health/platforms/check", status_code=202)

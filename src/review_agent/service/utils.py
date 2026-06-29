@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from review_agent.config.settings import get_settings
+from review_agent.types.enums import FindingSeverity
 
 logger = logging.getLogger(__name__)
 
@@ -63,13 +64,13 @@ def compute_reviewed_files(
         path = finding.file_path
         current = file_max_sev.get(path)
         sev = finding.severity.value if hasattr(finding.severity, "value") else finding.severity
-        if current is None or current == "info":
-            if sev == "critical":
-                file_max_sev[path] = "critical"
-            elif sev == "warning" and current != "critical":
-                file_max_sev[path] = "warning"
-            elif sev == "info" and current is None:
-                file_max_sev[path] = "info"
+        if current is None or current == FindingSeverity.INFO:
+            if sev == FindingSeverity.CRITICAL:
+                file_max_sev[path] = FindingSeverity.CRITICAL
+            elif sev == FindingSeverity.WARNING and current != FindingSeverity.CRITICAL:
+                file_max_sev[path] = FindingSeverity.WARNING
+            elif sev == FindingSeverity.INFO and current is None:
+                file_max_sev[path] = FindingSeverity.INFO
 
     return [{"path": p, "max_severity": s} for p, s in file_max_sev.items()]
 
@@ -119,10 +120,13 @@ def compute_reviewed_functions(
                 current = data["max_severity"]
                 if current is None:
                     data["max_severity"] = sev
-                elif sev == "critical" and current != "critical":
-                    data["max_severity"] = "critical"
-                elif sev == "warning" and current not in ("critical", "warning"):
-                    data["max_severity"] = "warning"
+                elif sev == FindingSeverity.CRITICAL and current != FindingSeverity.CRITICAL:
+                    data["max_severity"] = FindingSeverity.CRITICAL
+                elif sev == FindingSeverity.WARNING and current not in (
+                    FindingSeverity.CRITICAL,
+                    FindingSeverity.WARNING,
+                ):
+                    data["max_severity"] = FindingSeverity.WARNING
                 data["finding_count"] += 1
                 break
 

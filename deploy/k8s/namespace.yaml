@@ -1,0 +1,10 @@
+# =============================================================================
+# review-agent — Kubernetes Namespace
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: review-agent
+  labels:
+    app.kubernetes.io/name: review-agent
+    app.kubernetes.io/part-of: review-agent

@@ -15,7 +15,7 @@ from review_agent.types.orm import FindingModel, ProjectModel, ReviewModel
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["export"])
+router = APIRouter(tags=["export"])  # TODO: 登录页面未就绪，暂时不启用 JWT 认证
 
 _SEVERITY_ICONS = {
     "critical": "🔴",

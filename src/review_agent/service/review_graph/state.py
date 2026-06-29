@@ -37,6 +37,7 @@ class ReviewState(TypedDict):
     # ── 输入（一次写入，永不改变） ──
     repo_name: str
     sha: str
+    review_id: str  # 当前评审 ID，用于写入 review_ai_calls
     files: list[PRFile]
     pr_number: int | None  # PR 评审时设置，push 为 None
 
@@ -47,9 +48,11 @@ class ReviewState(TypedDict):
     previous_review_id: str | None  # 上次评审的 review ID（增量用）
     last_reviewed_sha: str | None  # 上次评到的 SHA（增量用）
     previous_file_paths: list[str]  # 已弃用，保留兼容
-    previous_reviewed_files: list[dict]  # [{path, max_severity}] 增量分级决策
+    previous_reviewed_files: list[dict[str, Any]]  # [{path, max_severity}] 增量分级决策
     skip_levels: str  # 跳过的严重级别（逗号分隔）
-    previous_reviewed_functions: list[dict]  # [{file_path, fn, start, end, max_severity, sha}]
+    previous_reviewed_functions: list[
+        dict[str, Any]
+    ]  # [{file_path, fn, start, end, max_severity, sha}]
     inter_commit_files: list[PRFile]  # diff last_reviewed_sha → head_sha for function change
     new_chunks: list[CodeChunk]  # 本次新增的 chunk，fanout/route 基于此
 
@@ -65,6 +68,9 @@ class ReviewState(TypedDict):
     # ── 错误追踪（Send 并行安全，使用 Annotated reducer） ──
     unreviewed_files: Annotated[list[str], _merge_lists]
     error_messages: Annotated[list[str], _merge_lists]
+
+    # ── AI 统计（用于最终日志汇总） ──
+    ai_stats: dict[str, int]
 
     # ── 输出 ──
     all_findings: list[DimensionFinding]

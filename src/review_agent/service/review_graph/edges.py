@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 
+from langgraph.types import Send
+
 from review_agent.service.review_graph.state import ReviewState
 from review_agent.types.enums import ChunkPath
 
@@ -19,7 +21,7 @@ def route_to_dispatch(state: ReviewState) -> str:  # noqa: ARG001
     return "run_all_rules"
 
 
-def route_chunks(state: ReviewState) -> str:
+def route_chunks(state: ReviewState) -> str | list[Send]:
     """dispatch_chunks 完成后，按 chunk 类型路由到不同评审节点。
 
     - DETAILED_REVIEW 的 chunk → ai_batch（批量 AI 评审）
@@ -37,8 +39,6 @@ def route_chunks(state: ReviewState) -> str:
     # 将待处理的 chunks 写入 state 供后续节点读取
     # route_chunks 是 edge 函数，通过返回特殊指令来触发 state 更新
     # 使用两个 Send 分别传递给 ai_batch 和 structural_batch
-    from langgraph.types import Send
-
     sends: list[Send] = []
     if ai_chunks:
         sends.append(Send("ai_batch", {"pending_ai_chunks": ai_chunks}))

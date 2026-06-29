@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any
+from typing import Any, cast
 
 from review_agent.config.settings import get_settings
 
@@ -64,7 +64,7 @@ class EmbeddingService:
             import httpx
 
             headers = {
-                "Authorization": f"Bearer {self._settings.ai_api_key}",
+                "Authorization": f"Bearer {self._settings.ai_api_key.get_secret_value()}",
                 "Content-Type": "application/json",
             }
             payload: dict[str, Any] = {
@@ -80,7 +80,7 @@ class EmbeddingService:
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                return data["data"][0]["embedding"]
+                return cast(list[float], data["data"][0]["embedding"])
         except Exception as exc:
             logger.warning("Embedding API failed, using fallback: %s", exc)
             return _pseudo_embedding(text)
@@ -141,7 +141,7 @@ class EmbeddingService:
         norm_b = sum(y * y for y in b) ** 0.5
         if norm_a == 0 or norm_b == 0:
             return 0.0
-        return dot / (norm_a * norm_b)
+        return cast(float, dot / (norm_a * norm_b))
 
     @staticmethod
     def cosine_similarity_batch(

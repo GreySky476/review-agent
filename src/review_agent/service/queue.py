@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+import random
+import time
 import traceback
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,6 +34,13 @@ class _ReviewResult:
     error_message: str | None = None
     reviewed_files: list[dict[str, str | None]] | None = None
     reviewed_functions: list[dict[str, Any]] | None = None
+    # ── 监控指标 ──
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    ai_call_count: int = 0
+    pipeline_duration_ms: int = 0
+    chunk_count: int = 0
+    file_count: int = 0
 
 
 logger = logging.getLogger(__name__)
@@ -59,7 +69,8 @@ async def run_review(
     previous_review_id: str | None = None,
     last_reviewed_sha: str | None = None,
     previous_file_paths: list[str] | None = None,
-    previous_reviewed_files: list[dict] | None = None,
+    previous_reviewed_files: list[dict[str, Any]] | None = None,
+    _trace_id: str | None = None,
 ) -> dict[str, Any]:
     """执行 PR 评审任务（ARQ worker 调用），支持增量。
 
@@ -102,13 +113,13 @@ async def run_review(
             bool(previous_review_id),
         )
         settings = get_settings()
-        git_provider = GitHubProvider(token=settings.github_token)
+        git_provider = GitHubProvider(token=settings.github_token.get_secret_value())
         ai_provider: Any = None
-        if settings.ai_api_key:
+        if settings.ai_api_key.get_secret_value():
             from review_agent.service.ai.deepseek import DeepSeekProvider
 
             ai_provider = DeepSeekProvider(
-                api_key=settings.ai_api_key,
+                api_key=settings.ai_api_key.get_secret_value(),
                 base_url=settings.ai_base_url,
             )
 
@@ -165,12 +176,14 @@ async def run_review(
             repo_name,
             sha,
             files,
-            knowledge_base,
+            review_id=review_id,
+            knowledge_base=knowledge_base,
             pr_number=pr_number,
             previous_review_id=previous_review_id,
             last_reviewed_sha=last_reviewed_sha,
             previous_file_paths=previous_file_paths,
             previous_reviewed_files=previous_reviewed_files,
+            _trace_id=_trace_id,
         )
 
         # 发布 PR Comment（标记 commit SHA，增量时追评）
@@ -263,7 +276,7 @@ async def run_review(
         if review_id:
             try:
                 async with async_session_factory() as db:
-                    # 1. 更新 ReviewModel
+                    # 1. 更新 ReviewModel（含汇总指标）
                     review_repo = ReviewRepo(db)
                     await review_repo.update(
                         review_id,
@@ -271,6 +284,13 @@ async def run_review(
                         score=result.score,
                         findings_count=len(result.findings),
                         error_message=result.error_message,
+                        summary_markdown=result.summary_markdown or None,
+                        total_prompt_tokens=result.total_prompt_tokens,
+                        total_completion_tokens=result.total_completion_tokens,
+                        ai_call_count=result.ai_call_count,
+                        pipeline_duration_ms=result.pipeline_duration_ms or None,
+                        chunk_count=result.chunk_count,
+                        file_count=result.file_count,
                     )
                     if result.reviewed_files is not None:
                         await review_repo.update_reviewed_files(review_id, result.reviewed_files)
@@ -387,8 +407,9 @@ async def run_commit_review(
     changed_files: list[dict[str, Any]],
     review_id: str = "",
     previous_review_id: str | None = None,
-    previous_reviewed_files: list[dict] | None = None,
+    previous_reviewed_files: list[dict[str, Any]] | None = None,
     skip_levels: str = "",
+    _trace_id: str | None = None,
 ) -> dict[str, Any]:
     """执行 commit 评审任务（ARQ worker 调用）。"""
     from review_agent.config.database import async_session_factory
@@ -416,13 +437,13 @@ async def run_commit_review(
     try:
         logger.info("Starting commit review for %s@%s (project=%s)", repo_name, sha, project_id)
         settings = get_settings()
-        git_provider = GitHubProvider(token=settings.github_token)
+        git_provider = GitHubProvider(token=settings.github_token.get_secret_value())
         ai_provider: Any = None
-        if settings.ai_api_key:
+        if settings.ai_api_key.get_secret_value():
             from review_agent.service.ai.deepseek import DeepSeekProvider
 
             ai_provider = DeepSeekProvider(
-                api_key=settings.ai_api_key,
+                api_key=settings.ai_api_key.get_secret_value(),
                 base_url=settings.ai_base_url,
             )
 
@@ -498,10 +519,12 @@ async def run_commit_review(
             repo_name,
             sha,
             files,
-            knowledge_base,
+            review_id=review_id,
+            knowledge_base=knowledge_base,
             previous_review_id=previous_review_id,
             previous_reviewed_files=previous_reviewed_files,
             skip_levels=skip_levels,
+            _trace_id=_trace_id,
         )
 
         # 发布摘要评论到 GitHub（失败不影响评审结果）
@@ -532,7 +555,7 @@ async def run_commit_review(
         if review_id:
             try:
                 async with async_session_factory() as db:
-                    # 1. 更新 ReviewModel
+                    # 1. 更新 ReviewModel（含汇总指标）
                     review_repo = ReviewRepo(db)
                     await review_repo.update(
                         review_id,
@@ -540,6 +563,13 @@ async def run_commit_review(
                         score=result.score,
                         findings_count=len(result.findings),
                         error_message=result.error_message,
+                        summary_markdown=result.summary_markdown or None,
+                        total_prompt_tokens=result.total_prompt_tokens,
+                        total_completion_tokens=result.total_completion_tokens,
+                        ai_call_count=result.ai_call_count,
+                        pipeline_duration_ms=result.pipeline_duration_ms or None,
+                        chunk_count=result.chunk_count,
+                        file_count=result.file_count,
                     )
 
                     # 2. 写入 Findings
@@ -682,16 +712,34 @@ async def _run_with_langgraph(
     repo_name: str,
     sha: str,
     files: list[PRFile],
+    review_id: str = "",
     knowledge_base: Any = None,
     *,
     pr_number: int | None = None,
     previous_review_id: str | None = None,
     last_reviewed_sha: str | None = None,
     previous_file_paths: list[str] | None = None,
-    previous_reviewed_files: list[dict] | None = None,
+    previous_reviewed_files: list[dict[str, Any]] | None = None,
     skip_levels: str = "",
+    _trace_id: str | None = None,
 ) -> Any:
     """使用 LangGraph 图执行评审（支持 PR 增量）。"""
+    # 从 ARQ job meta 恢复 trace context（如果存在）
+    if _trace_id:
+        try:
+            from opentelemetry import context
+            from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
+
+            span_ctx = SpanContext(
+                trace_id=int(_trace_id, 16),
+                span_id=random.getrandbits(64),
+                is_remote=True,
+                trace_flags=TraceFlags(TraceFlags.SAMPLED),
+            )
+            otel_ctx = context.set_value("current-span", NonRecordingSpan(span_ctx))
+            context.attach(otel_ctx)
+        except Exception:
+            pass
     from review_agent.service.review_graph.checkpointer import (
         create_checkpointer,
         create_postgres_checkpointer,
@@ -708,6 +756,7 @@ async def _run_with_langgraph(
     )
 
     # 尝试使用 PostgresSaver（持久化），失败时降级到 MemorySaver
+    _saver_cleanup: Callable[[], Awaitable[None]]
     try:
         saver_cm = create_postgres_checkpointer()
         saver = await saver_cm.__aenter__()
@@ -715,11 +764,19 @@ async def _run_with_langgraph(
             await saver.setup()
         except Exception:
             logger.debug("PostgresSaver setup skipped (tables may already exist)")
-        _saver_cleanup = lambda: saver_cm.__aexit__(None, None, None)  # noqa: E731
+
+        async def _cleanup_saver() -> None:
+            await saver_cm.__aexit__(None, None, None)
+
+        _saver_cleanup = _cleanup_saver
     except Exception:
         logger.info("PostgresSaver unavailable, falling back to MemorySaver")
         saver = create_checkpointer()
-        _saver_cleanup = lambda: None  # noqa: E731
+
+        async def _cleanup_saver() -> None:
+            pass
+
+        _saver_cleanup = _cleanup_saver
 
     graph = build_review_graph(
         git_provider=git_provider,
@@ -730,7 +787,7 @@ async def _run_with_langgraph(
 
     # ── 函数级增量数据加载 ────────────────────────────
     # 从 DB 加载 previous_reviewed_functions
-    prev_reviewed_functions: list[dict] = []
+    prev_reviewed_functions: list[dict[str, Any]] = []
     if previous_review_id:
         try:
             from review_agent.config.database import async_session_factory
@@ -780,6 +837,7 @@ async def _run_with_langgraph(
     initial_state: dict[str, Any] = {
         "repo_name": repo_name,
         "sha": sha,
+        "review_id": review_id,
         "files": files,
         "pr_number": pr_number,
         "previous_review_id": previous_review_id,
@@ -792,11 +850,13 @@ async def _run_with_langgraph(
         **_DEFAULT_STATE,
     }
 
+    t0 = time.monotonic()
     thread_id = f"pr:{repo_name}:{pr_number}:{sha[:12]}" if pr_number else f"{repo_name}:{sha}"
     result_state = await graph.ainvoke(
         initial_state,
         {"configurable": {"thread_id": thread_id}},
     )
+    pipeline_elapsed = time.monotonic() - t0
 
     error_msgs = result_state.get("error_messages", [])
     unreviewed = result_state.get("unreviewed_files", [])
@@ -821,18 +881,58 @@ async def _run_with_langgraph(
     has_issues = bool(unreviewed) or bool(error_msgs)
     status = ReviewStatus.COMPLETED_WITH_ERRORS if has_issues else ReviewStatus.COMPLETED
 
+    total_chunks = len(new_chunks) if new_chunks else len(result_state.get("chunks", []))
+    total_files = len(result_state.get("target_files", []))
+    files_with_findings = len({f.file_path for f in deduped})
+    critical_count = sum(1 for f in deduped if hasattr(f, "severity") and f.severity == "critical")
+    warning_count = sum(1 for f in deduped if hasattr(f, "severity") and f.severity == "warning")
+    score = result_state.get("score", 100)
+    ai_stats = result_state.get("ai_stats", {})
+    input_tok = ai_stats.get("prompt_tokens_est", 0)
+    output_tok = ai_stats.get("completion_tokens_est", 0)
+    logger.info(
+        "pipeline_result: elapsed=%.1fs total_files=%d files_with_findings=%d "
+        "files_clean=%d chunks=%d deduped=%d score=%d "
+        "critical=%d warning=%d unreviewed=%d "
+        "ai_batches=%d ai_failed=%d "
+        "inputToken=%d outputToken=%d totalToken=%d "
+        "status=%s",
+        pipeline_elapsed,
+        total_files,
+        files_with_findings,
+        total_files - files_with_findings,
+        total_chunks,
+        len(deduped),
+        score,
+        critical_count,
+        warning_count,
+        len(unreviewed),
+        ai_stats.get("total", 0),
+        ai_stats.get("failed", 0),
+        input_tok,
+        output_tok,
+        input_tok + output_tok,
+        status.value,
+    )
+
     try:
         return _ReviewResult(
             findings=deduped,
-            score=result_state.get("score", 100),
+            score=score,
             summary_markdown=result_state.get("summary_markdown", ""),
             status=status,
             error_message="; ".join(error_msgs) if error_msgs else None,
             reviewed_files=reviewed_files,
             reviewed_functions=reviewed_functions,
+            total_prompt_tokens=input_tok,
+            total_completion_tokens=output_tok,
+            ai_call_count=ai_stats.get("total", 0),
+            pipeline_duration_ms=int(pipeline_elapsed * 1000),
+            chunk_count=total_chunks,
+            file_count=total_files,
         )
     finally:
-        _saver_cleanup()
+        await _saver_cleanup()
 
 
 async def enqueue_review(project_id: str, pr_number: int, head_sha: str) -> str | None:
@@ -860,7 +960,7 @@ async def enqueue_commit_review(
     changed_files: list[dict[str, Any]],
     review_id: str = "",
     previous_review_id: str | None = None,
-    previous_reviewed_files: list[dict] | None = None,
+    previous_reviewed_files: list[dict[str, Any]] | None = None,
     skip_levels: str = "",
 ) -> str | None:
     """将 commit 评审任务加入队列。"""
@@ -890,6 +990,20 @@ async def enqueue_commit_review(
         return None
 
 
+def _get_current_trace_id() -> str | None:
+    """获取当前 OpenTelemetry span 的 trace_id。"""
+    try:
+        from opentelemetry import trace as otel_trace
+
+        span = otel_trace.get_current_span()
+        span_ctx = span.get_span_context()
+        if span_ctx.is_valid:
+            return hex(span_ctx.trace_id)[2:]
+    except Exception:
+        pass
+    return None
+
+
 async def enqueue_pr_review(
     project_id: str,
     repo_name: str,
@@ -900,7 +1014,7 @@ async def enqueue_pr_review(
     previous_review_id: str | None = None,
     last_reviewed_sha: str | None = None,
     previous_file_paths: list[str] | None = None,
-    previous_reviewed_files: list[dict] | None = None,
+    previous_reviewed_files: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """将 PR 评审任务加入队列（含增量上下文）。"""
     try:
@@ -918,6 +1032,7 @@ async def enqueue_pr_review(
             last_reviewed_sha,
             previous_file_paths,
             previous_reviewed_files,
+            _trace_id=_get_current_trace_id(),
         )
         await redis.close()
         return job.job_id if job else None
@@ -991,7 +1106,8 @@ def _extract_repo_name_from_url(repo_url: str) -> str | None:
 async def _on_job_failure(ctx: dict[str, Any]) -> None:
     """ARQ Job 最终失败回调（所有重试耗尽后调用）。
 
-    记录死信信息到 review_errors 表，供运维排查。
+    记录死信信息到 review_errors 表，并提取 project_id / review_id
+    以支持后续通过 replay API 重新入队。
     """
     job_id = ctx.get("job_id", "?")
     function_name = ctx.get("function_name", "?")
@@ -1000,6 +1116,18 @@ async def _on_job_failure(ctx: dict[str, Any]) -> None:
     args = ctx.get("args", [])
     args_summary = ", ".join(str(a)[:50] for a in args[:3])
 
+    # Extract project_id and review_id from job args for replay support.
+    # run_review: args[0]=project_id, args[5]=review_id
+    # run_commit_review: args[0]=project_id, args[4]=review_id
+    _project_id: str | None = None
+    _review_id: str | None = None
+    if len(args) > 0 and isinstance(args[0], str):
+        _project_id = args[0] or None
+    if function_name == "run_review" and len(args) > 5:
+        _review_id = args[5] if isinstance(args[5], str) and args[5] else None
+    elif function_name == "run_commit_review" and len(args) > 4:
+        _review_id = args[4] if isinstance(args[4], str) and args[4] else None
+
     await log_error(
         error_type="arq_job_failed",
         error_message=(
@@ -1007,6 +1135,8 @@ async def _on_job_failure(ctx: dict[str, Any]) -> None:
             f"{function_name}({args_summary}) -> {exc_str}"
         ),
         error_detail=traceback.format_exc() if exc_info else None,
+        project_id=_project_id,
+        review_id=_review_id,
     )
     logger.error(
         "ARQ dead letter: job=%s func=%s args=%s error=%s",

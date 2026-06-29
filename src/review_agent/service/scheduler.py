@@ -132,7 +132,7 @@ async def _health_check_loop(interval_seconds: int) -> None:
             await asyncio.sleep(interval_seconds)
             continue
         try:
-            async with async_session_factory() as session:  # type: ignore[arg-type]
+            async with async_session_factory() as session:
                 await run_all_checks(session, webhook_check=True)
                 await session.commit()
         except Exception:
